@@ -1,0 +1,7 @@
+digraph "packages_batch_osc_core" {
+rankdir=BT
+charset="utf-8"
+"batch_analyzer" [color="black", label=<batch_analyzer>, shape="box", style="solid"];
+"lfp_analyzer" [color="black", label=<lfp_analyzer>, shape="box", style="solid"];
+"batch_analyzer" -> "lfp_analyzer" [arrowhead="open", arrowtail="none"];
+}

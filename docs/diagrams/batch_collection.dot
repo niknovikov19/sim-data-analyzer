@@ -1,0 +1,49 @@
+digraph batch_collection {
+    graph [rankdir=LR, fontsize=10, labelloc=t, label="Batch Collection Patterns"];
+    node [shape=box, style="rounded,filled", fillcolor="#f9f9f9", color="#666666", fontname="Helvetica"];
+    edge [fontname="Helvetica", color="#555555"];
+
+    subgraph cluster_batchosc {
+        label="batch_osc_analyzer";
+        color="#cccccc";
+        bo_cfg [label="grid_?????_params.json", fillcolor="#fff2cc"];
+        bo_raw [label="grid_?????_data.pkl", fillcolor="#fff2cc"];
+        bo_an [label="BatchAnalyzer / BatchAnalyzerOsc"];
+        bo_out [label="derived pkl caches", fillcolor="#e2f0d9"];
+        bo_cfg -> bo_an;
+        bo_raw -> bo_an;
+        bo_an -> bo_out;
+    }
+
+    subgraph cluster_a1 {
+        label="A1-OUinp";
+        color="#cccccc";
+        a1_cfg [label="*_cfg.json", fillcolor="#fff2cc"];
+        a1_raw [label="*_data.pkl", fillcolor="#fff2cc"];
+        a1_brm [label="BatchResultManager\nnearest lookup"];
+        a1_utils [label="batch_utils\nxarray job grid"];
+        a1_der [label="json / nc / csv products", fillcolor="#e2f0d9"];
+        a1_nb [label="exp_configs notebooks\nproc_batch / collect_batch_res /\nselect_rx_points / plot_nullclines", fillcolor="#eadcf4"];
+        a1_cfg -> a1_brm;
+        a1_cfg -> a1_utils;
+        a1_raw -> a1_der;
+        a1_der -> a1_utils;
+        a1_utils -> a1_nb;
+        a1_der -> a1_nb;
+        a1_cfg -> a1_nb;
+    }
+
+    subgraph cluster_mt {
+        label="model_tuner";
+        color="#cccccc";
+        mt_cfg [label="exp_name_?????_cfg.json", fillcolor="#fff2cc"];
+        mt_raw [label="exp_name_?????_data.pkl", fillcolor="#fff2cc"];
+        mt_an [label="netpyne_batch_analyzer.BatchAnalyzer"];
+        mt_get [label="BatchMetricGetter1D"];
+        mt_cache [label="typed cached artifacts", fillcolor="#e2f0d9"];
+        mt_cfg -> mt_an;
+        mt_raw -> mt_get;
+        mt_an -> mt_get;
+        mt_get -> mt_cache;
+    }
+}

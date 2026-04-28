@@ -1,0 +1,29 @@
+digraph abstraction_layers {
+    graph [rankdir=TB, fontsize=10, labelloc=t, label="Abstraction Layers Across Sources"];
+    node [shape=box, style="rounded,filled", fillcolor="#f9f9f9", color="#666666", fontname="Helvetica"];
+    edge [color="#666666"];
+
+    raw [label="Raw Simulation Source\nNetPyNE result pkl + cfg json", fillcolor="#fff2cc"];
+    parse [label="Low-Level Parser Utils\nspikes, pops, LFP, voltages", fillcolor="#ddebf7"];
+    proc [label="Low-Level Processing Utils\nrates, CVs, spectra, xarray math", fillcolor="#ddebf7"];
+    cache [label="Artifact / Cache Layer\npkl / json / nc", fillcolor="#e2f0d9"];
+    batch [label="Batch Layer\njob discovery, param extraction, grids", fillcolor="#fce4d6"];
+    workflow [label="Workflow / Consumer Layer\nplots, tables, tuning, optimization", fillcolor="#eadcf4"];
+
+    raw -> parse -> proc -> cache -> batch -> workflow;
+
+    a1 [label="A1-OUinp\noccupies every layer", shape=note, fillcolor="#ffffff"];
+    bo [label="batch_osc_analyzer\nstrong in batch/workflow,\nlight parser/cache", shape=note, fillcolor="#ffffff"];
+    sr [label="sim_res_analyzer\nstrong parser + xarray cache", shape=note, fillcolor="#ffffff"];
+    mt [label="model_tuner\nstrong parser + typed artifacts + consumer", shape=note, fillcolor="#ffffff"];
+    xr [label="xr_utils_neuro\nprocessing layer only", shape=note, fillcolor="#ffffff"];
+
+    parse -> a1 [style=dashed];
+    parse -> sr [style=dashed];
+    parse -> mt [style=dashed];
+    parse -> bo [style=dashed];
+    proc -> xr [style=dashed];
+    workflow -> a1 [style=dashed];
+    workflow -> bo [style=dashed];
+    workflow -> mt [style=dashed];
+}

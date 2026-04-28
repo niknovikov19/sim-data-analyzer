@@ -1,0 +1,47 @@
+digraph a1_ou_tuning_workflow {
+    graph [rankdir=LR, fontsize=10, labelloc=t, label="A1 OU-Tuning Workflow"];
+    node [shape=box, style="rounded,filled", fillcolor="#f9f9f9", color="#666666", fontname="Helvetica"];
+    edge [fontname="Helvetica", color="#555555"];
+
+    cfg [label="per-job cfg json\n*_cfg.json", fillcolor="#fff2cc"];
+    data [label="raw sim result pkl\n*_data.pkl", fillcolor="#fff2cc"];
+
+    brm [label="BatchResultManager\nOU-grid lookup"];
+    parse [label="netpyne_res_parse_utils\nlow-level extraction"];
+    proc [label="data_proc_utils\nrates / CVs / dynamics"];
+    simproc [label="sim_res_proc_utils\nhigher-level stats"];
+
+    csv_rates [label="create_batch_res_table.py\nanalysis/batch_result.csv", fillcolor="#e2f0d9"];
+    csv_v [label="create_batch_voltage_table.py\nbatch_voltages.csv", fillcolor="#e2f0d9"];
+    xr_batch [label="batch_res_to_xr.py\nanalysis/batch_result.nc", fillcolor="#e2f0d9"];
+    harvest [label="batch_utils.py\ncollect json/nc into xarray", fillcolor="#e2f0d9"];
+
+    plots [label="plot_* scripts\nread csv/json/nc/raw pkl", fillcolor="#eadcf4"];
+    notebooks [label="exp_configs notebooks\nproc_batch / collect_batch_res /\nselect_rx_points / plot_nullclines /\ncompare_rates", fillcolor="#eadcf4"];
+
+    cfg -> brm;
+    cfg -> csv_rates;
+    cfg -> csv_v;
+    cfg -> xr_batch;
+    data -> parse;
+    parse -> proc;
+    parse -> simproc;
+    proc -> csv_rates;
+    parse -> csv_v;
+    proc -> xr_batch;
+    cfg -> harvest;
+    csv_rates -> plots;
+    csv_v -> plots;
+    xr_batch -> plots;
+    brm -> plots;
+    harvest -> plots;
+    simproc -> plots;
+    csv_rates -> notebooks;
+    csv_v -> notebooks;
+    xr_batch -> notebooks;
+    harvest -> notebooks;
+    brm -> notebooks;
+    simproc -> notebooks;
+    cfg -> notebooks;
+    data -> notebooks;
+}

@@ -1,0 +1,14 @@
+digraph "classes_sim_res_analyzer_core" {
+rankdir=BT
+charset="utf-8"
+"data_keeper.CustomEncoder" [color="black", fontcolor="black", label=<{CustomEncoder|<br ALIGN="LEFT"/>|default(obj)<br ALIGN="LEFT"/>treat_dataclass(obj)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"data_keeper.DataKeeper" [color="black", fontcolor="black", label=<{DataKeeper|data_index<br ALIGN="LEFT"/>metadata_file<br ALIGN="LEFT"/>storage_dir : Path<br ALIGN="LEFT"/>|exists(name, params)<br ALIGN="LEFT"/>get_data(name: str, params: list): xr.DataArray<br ALIGN="LEFT"/>list_data()<br ALIGN="LEFT"/>store_data(data: xr.DataArray, name: str, params: list, allow_rewrite)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"data_proc.DataProcessor" [color="black", fontcolor="black", label=<{DataProcessor|dk : Optional[DataKeeper]<br ALIGN="LEFT"/>|calc_bipolar(inp_name: str, inp_params: dict, out_name: str, recalc: bool)<br ALIGN="LEFT"/>calc_csd(inp_name: str, inp_params: dict, out_name: str, recalc: bool)<br ALIGN="LEFT"/>calc_psd(inp_name: str, inp_params: dict, psd_params: PSDParams, out_name: str, recalc: bool)<br ALIGN="LEFT"/>set_data_keeper(dk: DataKeeper)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"data_keeper.NonDefEncoder" [color="black", fontcolor="black", label=<{NonDefEncoder|<br ALIGN="LEFT"/>|treat_dataclass(obj)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"data_proc.PSDParams" [color="black", fontcolor="black", label=<{PSDParams|fmax : float<br ALIGN="LEFT"/>inp_limits : list<br ALIGN="LEFT"/>method : str<br ALIGN="LEFT"/>time_dim : str<br ALIGN="LEFT"/>win_len : float<br ALIGN="LEFT"/>win_overlap : float<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"sim_res_parser.RateParams" [color="black", fontcolor="black", label=<{RateParams|dt : float<br ALIGN="LEFT"/>time_limits : list<br ALIGN="LEFT"/>|}>, shape="record", style="solid"];
+"sim_res_parser.SimResultParser" [color="black", fontcolor="black", label=<{SimResultParser|dk : Optional[DataKeeper]<br ALIGN="LEFT"/>sim_res : NoneType<br ALIGN="LEFT"/>|extract_lfp(output_name)<br ALIGN="LEFT"/>extract_pop_lfps(output_name)<br ALIGN="LEFT"/>extract_pop_rates_dyn(rate_par: RateParams, output_name)<br ALIGN="LEFT"/>read_sim_result(fpath_sim_res)<br ALIGN="LEFT"/>set_data_keeper(dk: DataKeeper)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"data_keeper.NonDefEncoder" -> "data_keeper.CustomEncoder" [arrowhead="empty", arrowtail="none"];
+"data_keeper.DataKeeper" -> "data_proc.DataProcessor" [arrowhead="odiamond", arrowtail="none", fontcolor="green", label="dk", style="solid"];
+"data_keeper.DataKeeper" -> "sim_res_parser.SimResultParser" [arrowhead="odiamond", arrowtail="none", fontcolor="green", label="dk", style="solid"];
+}

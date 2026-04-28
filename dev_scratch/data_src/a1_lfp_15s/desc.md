@@ -1,0 +1,2 @@
+From: 
+`exp_results/batch_rxbkg_state1_mech1/net_newsec_var_seed/exp_a1_ee_fade_lfp_nseed_3_t_10.0_15.0_lfp_0_2000_100_ictrl_wmult_0.25_ee_0.5`

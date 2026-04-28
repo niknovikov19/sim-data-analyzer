@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+**/_legacy/
+.vscode/
+.idea/
+.codex
+dev_scratch/data_src/a1_lfp_15s/data_00000_seed_1000.pkl

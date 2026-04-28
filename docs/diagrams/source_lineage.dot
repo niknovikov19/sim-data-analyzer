@@ -1,0 +1,45 @@
+digraph source_lineage {
+    graph [rankdir=LR, fontsize=10, labelloc=t, label="Cross-Repo Lineage"];
+    node [shape=box, style="rounded,filled", fillcolor="#f8f8f8", color="#666666", fontname="Helvetica"];
+    edge [fontname="Helvetica", color="#555555"];
+
+    subgraph cluster_parse {
+        label="Low-Level NetPyNE Parser Line";
+        color="#cccccc";
+        a1_parse [label="A1\nnetpyne_res_parse_utils\nfull parser + voltages + xarray"];
+        mt_parse [label="model_tuner\nnetpyne_res_parse_utils\nshared subset"];
+        sr_parse [label="sim_res_analyzer\nsim_res_parse_utils\nshared subset +\nrate dynamics"];
+        bo_parse [label="batch_osc_analyzer\nsim_res_parser\nLFP/pop fragment"];
+    }
+
+    subgraph cluster_proc {
+        label="Low-Level Processing Line";
+        color="#cccccc";
+        a1_proc [label="A1\ndata_proc_utils\nrates + CV + rate dynamics"];
+        mt_proc [label="model_tuner\ndata_proc_utils\nrates + CV"];
+        sr_high [label="sim_res_analyzer\ndata_proc.py / sim_res_parser.py\nxarray-first processing"];
+        bo_proc [label="batch_osc_analyzer\ncommon.py + BatchAnalyzerOsc\nbatch-owned math"];
+    }
+
+    subgraph cluster_cache {
+        label="Artifact / Cache Line";
+        color="#cccccc";
+        a1_art [label="A1\nworkflow outputs\ncsv / json / nc"];
+        sr_cache [label="sim_res_analyzer\nDataKeeper\nxarray .nc only"];
+        mt_cache [label="model_tuner\nDataKeeper\npkl / json / nc"];
+        xr_utils [label="xr_utils_neuro\nutility extraction"];
+    }
+
+    a1_parse -> mt_parse [label="shared subset"];
+    a1_parse -> sr_parse [label="partial fork"];
+    sr_parse -> bo_parse [label="narrow LFP fragment"];
+
+    a1_proc -> mt_proc [label="shared subset"];
+    a1_proc -> sr_high [label="same domain,\ndifferent abstraction"];
+    bo_parse -> bo_proc [label="used by"];
+
+    sr_high -> sr_cache [label="writes xarray"];
+    sr_cache -> mt_cache [label="generalized cache lineage"];
+    sr_high -> xr_utils [label="xarray helper extraction"];
+    a1_art -> mt_cache [label="same problem,\nmore structured later"];
+}

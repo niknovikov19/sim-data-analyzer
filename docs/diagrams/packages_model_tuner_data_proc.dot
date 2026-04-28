@@ -1,0 +1,42 @@
+digraph "packages_model_tuner_data_proc" {
+rankdir=BT
+charset="utf-8"
+"model_tuner.data_proc" [color="black", label=<model_tuner.data_proc>, shape="box", style="solid"];
+"model_tuner.data_proc.batch_metric_getter" [color="black", label=<model_tuner.data_proc.batch_metric_getter>, shape="box", style="solid"];
+"model_tuner.data_proc.data_keeper" [color="black", label=<model_tuner.data_proc.data_keeper>, shape="box", style="solid"];
+"model_tuner.data_proc.data_proc_funcs" [color="black", label=<model_tuner.data_proc.data_proc_funcs>, shape="box", style="solid"];
+"model_tuner.data_proc.data_proc_utils" [color="black", label=<model_tuner.data_proc.data_proc_utils>, shape="box", style="solid"];
+"model_tuner.data_proc.data_processor" [color="black", label=<model_tuner.data_proc.data_processor>, shape="box", style="solid"];
+"model_tuner.data_proc.data_types" [color="black", label=<model_tuner.data_proc.data_types>, shape="box", style="solid"];
+"model_tuner.data_proc.netpyne_batch_analyzer" [color="black", label=<model_tuner.data_proc.netpyne_batch_analyzer>, shape="box", style="solid"];
+"model_tuner.data_proc.netpyne_res_parse_utils" [color="black", label=<model_tuner.data_proc.netpyne_res_parse_utils>, shape="box", style="solid"];
+"model_tuner.data_proc.netpyne_result_parser" [color="black", label=<model_tuner.data_proc.netpyne_result_parser>, shape="box", style="solid"];
+"model_tuner.data_proc.proc_params" [color="black", label=<model_tuner.data_proc.proc_params>, shape="box", style="solid"];
+"model_tuner.data_proc.sim_result" [color="black", label=<model_tuner.data_proc.sim_result>, shape="box", style="solid"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.batch_metric_getter" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.data_keeper" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.data_proc_funcs" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.data_processor" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.data_types" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.netpyne_batch_analyzer" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.netpyne_result_parser" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.proc_params" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc" -> "model_tuner.data_proc.sim_result" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.data_keeper" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.data_processor" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.data_types" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.netpyne_batch_analyzer" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.netpyne_result_parser" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.proc_params" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.batch_metric_getter" -> "model_tuner.data_proc.sim_result" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.data_proc_funcs" -> "model_tuner.data_proc.data_types" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.data_proc_funcs" -> "model_tuner.data_proc.proc_params" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.data_processor" -> "model_tuner.data_proc.data_keeper" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.data_processor" -> "model_tuner.data_proc.data_types" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.data_processor" -> "model_tuner.data_proc.proc_params" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.data_types" -> "model_tuner.data_proc.proc_params" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.netpyne_result_parser" -> "model_tuner.data_proc.data_keeper" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.netpyne_result_parser" -> "model_tuner.data_proc.data_types" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.netpyne_result_parser" -> "model_tuner.data_proc.proc_params" [arrowhead="open", arrowtail="none"];
+"model_tuner.data_proc.netpyne_result_parser" -> "model_tuner.data_proc.sim_result" [arrowhead="open", arrowtail="none"];
+}

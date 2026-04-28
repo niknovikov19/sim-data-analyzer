@@ -1,0 +1,41 @@
+digraph storage_formats {
+    graph [rankdir=LR, fontsize=10, labelloc=t, label="Storage Format Patterns"];
+    node [shape=box, style="rounded,filled", fillcolor="#f9f9f9", color="#666666", fontname="Helvetica"];
+    edge [fontname="Helvetica", color="#555555"];
+
+    raw_pkl [label="raw result pkl", fillcolor="#fff2cc"];
+    cfg_json [label="cfg json", fillcolor="#fff2cc"];
+    derived_csv [label="derived csv", fillcolor="#e2f0d9"];
+    derived_json [label="derived json", fillcolor="#e2f0d9"];
+    derived_nc [label="derived nc", fillcolor="#e2f0d9"];
+    derived_pkl [label="derived pkl", fillcolor="#e2f0d9"];
+
+    a1 [label="A1-OUinp"];
+    bo [label="batch_osc_analyzer"];
+    sr [label="sim_res_analyzer"];
+    mt [label="model_tuner.data_proc"];
+    xr [label="xr_utils_neuro"];
+
+    raw_pkl -> a1;
+    cfg_json -> a1;
+    a1 -> derived_csv;
+    a1 -> derived_json;
+    a1 -> derived_nc;
+
+    raw_pkl -> bo;
+    cfg_json -> bo;
+    bo -> derived_pkl;
+    bo -> derived_nc [label="prototype path"];
+
+    raw_pkl -> sr;
+    sr -> derived_nc;
+    sr -> derived_json [label="metadata only"];
+
+    raw_pkl -> mt;
+    cfg_json -> mt [label="batch cfg"];
+    mt -> derived_pkl;
+    mt -> derived_json;
+    mt -> derived_nc;
+
+    xr -> derived_nc [style=dashed, label="consumes/produces none"];
+}

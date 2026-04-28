@@ -1,0 +1,8 @@
+digraph "classes_batch_osc_core" {
+rankdir=BT
+charset="utf-8"
+"batch_analyzer.BatchAnalyzer" [color="black", fontcolor="black", label=<{BatchAnalyzer|dirpath_data : Path<br ALIGN="LEFT"/>par_names<br ALIGN="LEFT"/>par_vals_lst : list<br ALIGN="LEFT"/>|get_data_slice(x: list, field_seq: list, par_vals_slice: dict)<br ALIGN="LEFT"/>get_slice_idx(par_vals_slice)<br ALIGN="LEFT"/>load_job_sim_data(job_id)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"batch_analyzer.BatchAnalyzerOsc" [color="black", fontcolor="black", label=<{BatchAnalyzerOsc|<br ALIGN="LEFT"/>|calc_lfp_data(lfp_params, need_recalc)<br ALIGN="LEFT"/>calc_rate_data(rbin_sz, time_range, pops_incl, pops_excl, need_recalc)<br ALIGN="LEFT"/>calc_spect_data(rbin_sz, time_range, pops_incl, pops_excl, corr_taper_width, fmax, ref, need_recalc)<br ALIGN="LEFT"/>get_job_lfp(job_id)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"lfp_analyzer.LFPAnalyzer" [color="black", fontcolor="black", label=<{LFPAnalyzer|W<br ALIGN="LEFT"/>Wavg_d : dict<br ALIGN="LEFT"/>Wavg_f : dict<br ALIGN="LEFT"/>depth_vec<br ALIGN="LEFT"/>freq_vec<br ALIGN="LEFT"/>lfp : ndarray<br ALIGN="LEFT"/>lfp_proc : ndarray<br ALIGN="LEFT"/>sim_result<br ALIGN="LEFT"/>tvec<br ALIGN="LEFT"/>tvec_proc<br ALIGN="LEFT"/>|analyze_lfp(t_lim, ref_chan, pow_type, fmax, pow_norm, layer_groups, fbands)<br ALIGN="LEFT"/>}>, shape="record", style="solid"];
+"batch_analyzer.BatchAnalyzerOsc" -> "batch_analyzer.BatchAnalyzer" [arrowhead="empty", arrowtail="none"];
+}

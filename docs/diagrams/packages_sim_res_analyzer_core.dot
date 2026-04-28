@@ -1,0 +1,9 @@
+digraph "packages_sim_res_analyzer_core" {
+rankdir=BT
+charset="utf-8"
+"data_keeper" [color="black", label=<data_keeper>, shape="box", style="solid"];
+"data_proc" [color="black", label=<data_proc>, shape="box", style="solid"];
+"sim_res_parser" [color="black", label=<sim_res_parser>, shape="box", style="solid"];
+"data_proc" -> "data_keeper" [arrowhead="open", arrowtail="none"];
+"sim_res_parser" -> "data_keeper" [arrowhead="open", arrowtail="none"];
+}
