@@ -3,6 +3,33 @@ import copy
 import numpy as np
 import xarray as xr
 
+from sim_data_analyzer.signal_filters import filter_signal
+
+
+def _maybe_store_proc_info(X_out, func_name, params, store_proc_info):
+    """Store processing metadata in a simple JSON-serializable attr. """
+    if not store_proc_info:
+        return X_out
+
+    # Extend an existing processing history if it is already present.
+    proc_steps = copy.deepcopy(X_out.attrs.get('proc_steps', []))
+    if not isinstance(proc_steps, list):
+        proc_steps = []
+    proc_steps.append({'name': func_name, 'params': params})
+    X_out.attrs['proc_steps'] = proc_steps
+    return X_out
+
+
+def _finalize_result(X_out, source_attrs, func_name, params, compute, store_proc_info):
+    """Realize deferred computation only when requested by the caller. """
+    if compute:
+        X_out = X_out.compute()
+
+    # Restore input attrs before appending the current processing step.
+    X_out.attrs = copy.deepcopy(source_attrs)
+    X_out = _maybe_store_proc_info(X_out, func_name, params, store_proc_info)
+    return X_out
+
 
 def _interp_isolated_outliers_1d(values, time_values, z_thresh, rel_neighbor_thresh):
     """Interpolate isolated one-bin outliers in a 1D time series. """
@@ -100,3 +127,58 @@ def interp_time_outliers(
         }
     }
     return X_out
+
+
+def filter_xr_signal(
+        X_in: xr.DataArray,
+        fband,
+        order: int = 3,
+        btype: str = 'bandpass',
+        fs: float | None = None,
+        time_dim: str = 'time',
+        compute: bool = True,
+        store_proc_info: bool = True
+        ) -> xr.DataArray:
+    """Filter an xarray signal along a time dimension.
+
+    If compute=False, return the xarray result without forcing computation.
+    If compute=True, compute the result before returning it. Deferred behavior
+    only matters for dask-backed or chunked inputs.
+    """
+
+    # The code below assumes that time is the last dimension
+    if X_in.dims[-1] != time_dim:
+        raise ValueError('Time should be the last dimension')
+
+    tt0 = X_in.coords[time_dim].values
+    if fs is None:
+        fs = round(1. / (tt0[1] - tt0[0]), 5)  # Round to correct for numerical errors
+
+    source_attrs = copy.deepcopy(X_in.attrs)
+    Y = xr.apply_ufunc(
+        filter_signal,
+        X_in,
+        kwargs={'fband': fband, 'order': order, 'btype': btype, 'fs': fs},
+        input_core_dims=[[time_dim]],
+        output_core_dims=[[time_dim]],
+        vectorize=True,
+        dask='parallelized',
+        output_dtypes=[np.float64],
+    )
+    Y = Y.transpose(*X_in.dims)
+
+    # Compute the result if needed, write the params to Y.attrs
+    if np.ndim(fband) == 0:
+        fband_attr = float(fband)
+    else:
+        fband_attr = np.asarray(fband, dtype=float).tolist()
+    params = {
+        'fband': fband_attr,
+        'order': order,
+        'btype': btype,
+        'fs': fs,
+        'time_dim': time_dim,
+    }
+    return _finalize_result(
+        Y, source_attrs, 'filter_xr_signal', params, compute, store_proc_info
+    )
