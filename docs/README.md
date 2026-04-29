@@ -16,6 +16,7 @@ The first shared parser collection now exists at `sim_data_analyzer/netpyne_res_
 The first xarray adapter collection now exists at `sim_data_analyzer/xr_adapters.py`.
 The first low-level processing collection now exists at `sim_data_analyzer/data_proc_utils.py`.
 The first low-level spectral collection now exists at `sim_data_analyzer/xr_spect.py`.
+The first low-level y-diff / bipolar / CSD collection now exists at `sim_data_analyzer/xr_diff.py`.
 
 This milestone is intentionally narrow:
 
@@ -26,6 +27,7 @@ This milestone is intentionally narrow:
 | collected now, xarray adapter layer | A1-sourced `get_trace_xr`, `get_voltages_xr` plus sim_res_analyzer-sourced `get_lfp_xr`, `get_pop_lfps_xr` in `sim_data_analyzer/xr_adapters.py` |
 | collected now, low-level processing core | A1/model_tuner shared `calc_pop_rate`, `calc_net_rates`, `calc_pop_cv`, `calc_net_cvs`, plus A1 `calc_pop_rate_dynamics`, `calc_net_rate_dynamics` in `sim_data_analyzer/data_proc_utils.py` |
 | collected now, low-level spectral core | `calc_xr_welch`, `calc_xr_tf`, `calc_xr_cpsd` in `sim_data_analyzer/xr_spect.py`, based on `xr_utils_neuro` with explicit `compute` and optional `proc_steps` attrs |
+| collected now, low-level y-diff core | `calc_xr_diff`, `calc_xr_bipolar`, `calc_xr_csd` in `sim_data_analyzer/xr_diff.py`, based on the identical A1/sim_res_analyzer lineage with explicit `compute` control and optional `proc_steps` attrs |
 | deferred A1-only | `prepare_sim_result` |
 | deferred sim_res_analyzer-only | `get_pop_cell_rates`, parser-side `calc_rate_dynamics()` |
 | deferred batch_osc-specific | the narrowed `sim_res_parser.py` fragment and its current semantic drift |
@@ -51,6 +53,7 @@ The collected parser module started as a direct copy of the stable A1/model_tune
 - The same adapter module now also contains `get_lfp_xr()` and `get_pop_lfps_xr()`, copied from the `sim_res_analyzer` LFP conversion helpers.
 - The low-level processing core is now collected too: shared rate/CV math comes from the A1/model_tuner overlap, while rate-dynamics comes from the A1 low-level helpers.
 - The low-level spectral core is now collected too: Welch, time-frequency, and cross-PSD helpers come from `xr_utils_neuro`, with explicit immediate/deferred execution control and optional processing metadata stored in xarray attrs.
+- The low-level y-diff core is now collected too: shared `xr_diff.py` behavior comes from the identical A1/sim_res_analyzer copies, and the collected module now preserves input attrs plus optional `proc_steps` metadata like the other shared processing helpers.
 - `A1` also has an additional notebook-driven analysis layer under `exp_configs/` that was easy to miss on a script-only pass. `proc_batch.ipynb` and similar notebooks consume `analysis.ou_tuning.batch_utils` and derived per-job outputs directly.
 - `sim_res_analyzer` and `model_tuner` are the main cache-layer lineage, but `model_tuner` currently appears to have the NetCDF load/save branches reversed inside `data_keeper.py`.
 - `batch_osc_analyzer_new.py` looks like an unfinished prototype: it names rate cache files as `.nc`, opens datasets from that path, but later reads/writes pickled Python lists to the same logical artifact.
@@ -73,6 +76,7 @@ The collected parser module started as a direct copy of the stable A1/model_tune
 - The collected xarray adapters are covered by `sim_data_analyzer/tests/test_xr_adapters.py`.
 - The collected low-level processing core is covered by `sim_data_analyzer/tests/test_data_proc_utils.py`.
 - The collected low-level spectral core is covered by `sim_data_analyzer/tests/test_xr_spect.py`.
+- The collected low-level y-diff core is covered by `sim_data_analyzer/tests/test_xr_diff.py`.
 - The tests compare the collected module directly against:
   `A1-OUinp/analysis/ou_tuning/netpyne_res_parse_utils.py`
   `model_tuner/model_tuner/data_proc/netpyne_res_parse_utils.py`

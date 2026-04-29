@@ -12,6 +12,8 @@ The first low-level processing collection is now implemented at
 `sim_data_analyzer/data_proc_utils.py`.
 The first low-level spectral collection is now implemented at
 `sim_data_analyzer/xr_spect.py`.
+The first low-level y-diff / bipolar / CSD collection is now implemented at
+`sim_data_analyzer/xr_diff.py`.
 
 This first pass is intentionally a direct collection of the stable A1/model_tuner
 overlap, not a semantic cleanup or rollout.
@@ -23,6 +25,7 @@ overlap, not a semantic cleanup or rollout.
 | collected now, xarray adapter layer | A1-sourced `get_trace_xr`, `get_voltages_xr` plus sim_res_analyzer-sourced `get_lfp_xr`, `get_pop_lfps_xr` in `sim_data_analyzer/xr_adapters.py` |
 | collected now, low-level processing core | A1/model_tuner shared `calc_pop_rate`, `calc_net_rates`, `calc_pop_cv`, `calc_net_cvs`, plus A1 `calc_pop_rate_dynamics`, `calc_net_rate_dynamics` in `sim_data_analyzer/data_proc_utils.py` |
 | collected now, low-level spectral core | `calc_xr_welch`, `calc_xr_tf`, `calc_xr_cpsd` in `sim_data_analyzer/xr_spect.py`, based on `xr_utils_neuro` with explicit `compute` control and optional `proc_steps` attrs |
+| collected now, low-level y-diff core | `calc_xr_diff`, `calc_xr_bipolar`, `calc_xr_csd` in `sim_data_analyzer/xr_diff.py`, based on the identical A1/sim_res_analyzer copies, with explicit `compute` control and optional `proc_steps` attrs |
 | deferred A1-only | `prepare_sim_result` |
 | deferred sim_res_analyzer-only | `get_pop_cell_rates`, parser-side `calc_rate_dynamics()` |
 | deferred batch_osc-specific | the narrowed `sim_res_parser.py` fragment, including its current `get_pop_names()` drift |
@@ -35,6 +38,8 @@ Verification for the collected low-level processing module now lives in
 `sim_data_analyzer/tests/test_data_proc_utils.py`.
 Verification for the collected low-level spectral module now lives in
 `sim_data_analyzer/tests/test_xr_spect.py`.
+Verification for the collected low-level y-diff module now lives in
+`sim_data_analyzer/tests/test_xr_diff.py`.
 
 ## Files Audited
 
@@ -121,6 +126,16 @@ Verification for the collected low-level spectral module now lives in
   a simple JSON-serializable `proc_steps` xarray attr.
 - Compatibility checks cover the overlapping older lines:
   `calc_xr_welch()` against `sim_res_analyzer` and `calc_xr_tf()` against A1.
+
+## Y-Diff Collection Notes
+
+- `sim_data_analyzer/xr_diff.py` now collects the low-level xarray finite-difference
+  helpers from the identical A1 / `sim_res_analyzer` lineage:
+  `calc_xr_diff()`, `calc_xr_bipolar()`, and `calc_xr_csd()`.
+- The collected y-diff helpers now make attrs behavior explicit:
+  input attrs are preserved by default, `compute=False` keeps deferred/lazy
+  behavior for dask-backed inputs, and `store_proc_info=True` appends a simple
+  JSON-serializable `proc_steps` xarray attr.
 
 ### `sim_res_analyzer` parser drift
 

@@ -23,6 +23,9 @@
 - collected low-level spectral core:
   `sim_data_analyzer.xr_spect`
   currently contains Welch, time-frequency, and cross-PSD xarray helpers with explicit `compute` control and optional `proc_steps` attrs
+- collected low-level y-diff core:
+  `sim_data_analyzer.xr_diff`
+  currently contains shared y-diff, bipolar, and CSD xarray helpers with explicit `compute` control and optional `proc_steps` attrs
 - A1 low-level parser:
   `get_net_spikes(sim_result, pop_names=None, combine_cells=True, t0=0, tmax=None, subtract_t0=True, ms=False, ndigits=6)`
 - A1 low-level processing:

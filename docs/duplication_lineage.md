@@ -58,6 +58,7 @@
 | Family | Files | Status | Notes |
 | --- | --- | --- | --- |
 | `xr_diff.py` | A1 `analysis/xr_proc`, sim_res_analyzer `code/xr_proc`, `xr_utils_neuro` | `identical` | same SHA1 across all three locations |
+| collected y-diff core | `sim_data_analyzer/xr_diff.py` + old `xr_diff.py` copies | `descendant` | collected from the identical low-level xarray diff helper set; adds explicit `compute` control, attr preservation, and optional `proc_steps` attrs |
 | collected spectral core | `sim_data_analyzer/xr_spect.py` + `xr_utils_neuro/xr_spect.py` | `identical` / `descendant` | collected from the richest low-level spectral helper set; adds explicit `compute` control and optional `proc_steps` attrs |
 | `xr_spect.py` | A1, sim_res_analyzer, xr_utils_neuro | `same purpose different behavior` | all three diverged |
 | `xr_proc.py` | A1 + sim_res_analyzer | `near-identical` | import surface differs because A1 still exposes `calc_xr_tf` |
