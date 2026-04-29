@@ -4,4 +4,5 @@ __pycache__/
 .vscode/
 .idea/
 .codex
-dev_scratch/data_src/a1_lfp_15s/data_00000_seed_1000.pkl
+dev_scratch/data_src
+dev_scratch/data_proc
