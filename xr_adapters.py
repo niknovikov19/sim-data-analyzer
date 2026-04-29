@@ -14,9 +14,25 @@ import xarray as xr
 
 from sim_data_analyzer.netpyne_res_parse_utils import (
     get_lfp,
+    get_net_size,
+    get_pop_cell_gids,
     get_pop_lfps,
     get_pop_names,
+    get_pop_size,
+    get_pop_spikes,
+    get_sim_duration,
 )
+from sim_data_analyzer.data_proc_utils import (
+    calc_net_rate_dynamics,
+    calc_pop_rate_dynamics,
+)
+
+
+def _make_rate_tvec(time_range: Tuple[float, float], dt_bin: float) -> np.ndarray:
+    """Create a time vector aligned with calc_pop_rate_dynamics(). """
+    t1, t2 = time_range
+    nbins = int((t2 - t1) / dt_bin)
+    return np.arange(nbins, dtype=np.float64) * dt_bin + t1
 
 
 def get_trace_xr(
@@ -96,3 +112,92 @@ def get_pop_lfps_xr(sim_result: Dict) -> xr.DataArray:
     for pop in pop_names:
         X.loc[{'pop': pop}] = lfp[pop]
     return X
+
+
+def get_pop_rate_dynamics_xr(
+        sim_result: Dict,
+        pop_name: str,
+        t_limits: Tuple[float, float | None] = (0, None),
+        dt_bin: float = 5e-3,
+        tau_smooth: float | None = None,
+        avg_cells: bool = True
+        ) -> xr.DataArray | None:
+    """Convert population rate dynamics to an xarray DataArray."""
+
+    t_limits = list(t_limits)
+    if t_limits[1] is None:
+        t_limits[1] = get_sim_duration(sim_result)
+
+    if avg_cells:
+        pop_spikes = get_pop_spikes(sim_result, pop_name, combine_cells=True)
+        pop_size = get_pop_size(sim_result, pop_name)
+        if pop_size == 0:
+            tvec = _make_rate_tvec(tuple(t_limits), dt_bin)
+            values = np.full(len(tvec), np.nan)
+        else:
+            tvec, values = calc_pop_rate_dynamics(
+                pop_spikes, tuple(t_limits), dt_bin, tau_smooth, ncells=pop_size
+            )
+        return xr.DataArray(values, dims=['time'], coords={'time': tvec})
+
+    pop_spikes = get_pop_spikes(sim_result, pop_name, combine_cells=False)
+    cell_gids = get_pop_cell_gids(sim_result, pop_name)
+    if len(cell_gids) == 0:
+        return None
+
+    tvec, rvecs = calc_pop_rate_dynamics(
+        pop_spikes, tuple(t_limits), dt_bin, tau_smooth
+    )
+    return xr.DataArray(
+        np.array(rvecs),
+        dims=['cell_gid', 'time'],
+        coords={'cell_gid': cell_gids, 'time': tvec},
+    )
+
+
+def get_net_rate_dynamics_xr(
+        sim_result: Dict,
+        t_limits: Tuple[float, float | None] = (0, None),
+        dt_bin: float = 5e-3,
+        tau_smooth: float | None = None,
+        avg_cells: bool = True
+        ) -> xr.DataArray:
+    """Convert network population rate dynamics to an xarray DataArray."""
+
+    if not avg_cells:
+        raise ValueError('Per-cell network rate dynamics are not supported')
+
+    t_limits = list(t_limits)
+    if t_limits[1] is None:
+        t_limits[1] = get_sim_duration(sim_result)
+
+    pop_names = get_pop_names(sim_result)
+    ncells = get_net_size(sim_result)
+    net_spikes = {
+        pop_name: get_pop_spikes(sim_result, pop_name, combine_cells=True)
+        for pop_name in pop_names
+    }
+
+    nonempty_pop_names = [pop_name for pop_name in pop_names if ncells[pop_name] > 0]
+    if nonempty_pop_names:
+        rate_dyn = calc_net_rate_dynamics(
+            {pop_name: net_spikes[pop_name] for pop_name in nonempty_pop_names},
+            tuple(t_limits),
+            dt_bin,
+            tau_smooth,
+            {pop_name: ncells[pop_name] for pop_name in nonempty_pop_names},
+            nonempty_pop_names,
+        )
+        tvec = rate_dyn[nonempty_pop_names[0]][0]
+    else:
+        tvec = _make_rate_tvec(tuple(t_limits), dt_bin)
+        rate_dyn = {}
+
+    R = xr.DataArray(
+        np.full((len(pop_names), len(tvec)), np.nan),
+        dims=['pop', 'time'],
+        coords={'pop': pop_names, 'time': tvec},
+    )
+    for pop_name in nonempty_pop_names:
+        R.loc[{'pop': pop_name}] = rate_dyn[pop_name][1]
+    return R

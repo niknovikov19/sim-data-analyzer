@@ -4,9 +4,11 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
 import xarray as xr
 
 from sim_data_analyzer import xr_adapters as collected
+from sim_data_analyzer import data_proc_utils as proc
 from sim_data_analyzer.tests.test_netpyne_res_parse_utils import _make_sim_result
 
 
@@ -15,6 +17,8 @@ XR_ADAPTER_NAMES = [
     "get_voltages_xr",
     "get_lfp_xr",
     "get_pop_lfps_xr",
+    "get_pop_rate_dynamics_xr",
+    "get_net_rate_dynamics_xr",
 ]
 
 
@@ -92,6 +96,62 @@ class TestCollectedXRAdapters(unittest.TestCase):
                 [p.kind for p in src_sig.parameters.values()],
                 name,
             )
+
+    def test_get_pop_rate_dynamics_xr_average_matches_sim_res_analyzer_overlap(self):
+        actual = collected.get_pop_rate_dynamics_xr(
+            self.sim_result, "IT2", t_limits=(0, 0.006), dt_bin=0.001
+        )
+        expected = self.sim_res_analyzer._sim_res_to_xr_pop_rates_dyn(
+            self.sim_result, 0.001, time_limits=(0, 0.006)
+        ).sel(pop="IT2", drop=True)
+        xr.testing.assert_identical(actual, expected)
+
+    def test_get_pop_rate_dynamics_xr_per_cell_matches_processing_core(self):
+        actual = collected.get_pop_rate_dynamics_xr(
+            self.sim_result, "IT2", t_limits=(0, 0.006), dt_bin=0.001,
+            avg_cells=False
+        )
+        pop_spikes = collected.get_pop_spikes(self.sim_result, "IT2", combine_cells=False)
+        tvec, rvecs = proc.calc_pop_rate_dynamics(
+            pop_spikes, (0, 0.006), dt_bin=0.001
+        )
+        expected = xr.DataArray(
+            np.array(rvecs),
+            dims=["cell_gid", "time"],
+            coords={"cell_gid": [0, 1], "time": tvec},
+        )
+        xr.testing.assert_identical(actual, expected)
+
+    def test_get_pop_rate_dynamics_xr_empty_population(self):
+        avg = collected.get_pop_rate_dynamics_xr(
+            self.sim_result, "SOM2", t_limits=(0, 0.006), dt_bin=0.001
+        )
+        self.assertEqual(avg.dims, ("time",))
+        self.assertTrue(np.isnan(avg.values).all())
+
+        per_cell = collected.get_pop_rate_dynamics_xr(
+            self.sim_result, "SOM2", t_limits=(0, 0.006), dt_bin=0.001,
+            avg_cells=False
+        )
+        self.assertIsNone(per_cell)
+
+    def test_get_net_rate_dynamics_xr_matches_pop_average_stack(self):
+        actual = collected.get_net_rate_dynamics_xr(
+            self.sim_result, t_limits=(0, 0.006), dt_bin=0.001
+        )
+        expected_it2 = collected.get_pop_rate_dynamics_xr(
+            self.sim_result, "IT2", t_limits=(0, 0.006), dt_bin=0.001
+        )
+        expected_pv2 = collected.get_pop_rate_dynamics_xr(
+            self.sim_result, "PV2", t_limits=(0, 0.006), dt_bin=0.001
+        )
+        xr.testing.assert_identical(actual.sel(pop="IT2", drop=True), expected_it2)
+        xr.testing.assert_identical(actual.sel(pop="PV2", drop=True), expected_pv2)
+        self.assertTrue(np.isnan(actual.sel(pop="SOM2").values).all())
+
+    def test_get_net_rate_dynamics_xr_rejects_per_cell(self):
+        with self.assertRaises(ValueError):
+            collected.get_net_rate_dynamics_xr(self.sim_result, avg_cells=False)
 
     def test_get_trace_xr_equivalence(self):
         calls = [
