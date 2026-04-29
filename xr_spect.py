@@ -31,8 +31,8 @@ def _finalize_result(X_out, source_attrs, func_name, params, compute, store_proc
 
 
 def calc_xr_welch(X_in: xr.DataArray, win_len=0.5, win_overlap=0.5, fmax=100,
-                  fs=None, time_dim='time', compute=False,
-                  store_proc_info=False):
+                  fs=None, time_dim='time', compute=True,
+                  store_proc_info=True):
     """Calculate power using Welch method.
 
     If compute=False, return the xarray result without forcing computation.
@@ -94,8 +94,8 @@ def calc_xr_welch(X_in: xr.DataArray, win_len=0.5, win_overlap=0.5, fmax=100,
 
 def calc_xr_cpsd(X1_in: xr.DataArray, X2_in: xr.DataArray, 
                  win_len=0.5, win_overlap=0.5, fmax=100,
-                 fs=None, time_dim='time', compute=False,
-                 store_proc_info=False):
+                 fs=None, time_dim='time', compute=True,
+                 store_proc_info=True):
     """Cross-power spectral density between two signals, complex-valued.
 
     If compute=False, return the xarray result without forcing computation.
@@ -157,8 +157,8 @@ def calc_xr_cpsd(X1_in: xr.DataArray, X2_in: xr.DataArray,
 
 
 def calc_xr_tf(X_in, win_len=0.5, win_overlap=0.5, fmax=100,
-               fs=None, time_dim='time', compute=False,
-               store_proc_info=False):
+               fs=None, time_dim='time', compute=True,
+               store_proc_info=True):
     """Calculate complex-valued time-frequency transform.
 
     If compute=False, return the xarray result without forcing computation.
