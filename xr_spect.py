@@ -30,63 +30,98 @@ def _finalize_result(X_out, source_attrs, func_name, params, compute, store_proc
     return X_out
 
 
-def calc_xr_welch(X_in: xr.DataArray, win_len=0.5, win_overlap=0.5, fmax=100,
-                  fs=None, time_dim='time', compute=True,
-                  store_proc_info=True):
-    """Calculate power using Welch method.
+def calc_xr_welch(
+        X_in: xr.DataArray,
+        win_len=4,
+        win_overlap=0.75,
+        fmin=2,
+        fmax=30,
+        fs=None,
+        time_dim='time',
+        window='hann',
+        detrend='constant',
+        scaling='density',
+        average='median',
+        compute=True,
+        store_proc_info=True):
+    """Calculate PSD using Welch method."""
 
-    If compute=False, return the xarray result without forcing computation.
-    If compute=True, compute the result before returning it. Deferred behavior
-    only matters for dask-backed or chunked inputs.
-    """
-    
-    # The code below assumes that time is the last dimension
     if X_in.dims[-1] != time_dim:
         raise ValueError('Time should be the last dimension')
-    
+
     # Sampling rate
     tt0 = X_in.coords[time_dim].values
     if fs is None:
-        fs = round(1. / (tt0[1] - tt0[0]), 5)  # Round to correct for numerical errors
+        fs = round(1. / (tt0[1] - tt0[0]), 5)
 
     # Window and overlap in samples
     nperseg = round(win_len * fs)
-    noverlap = round(win_overlap * win_len * fs)
+    noverlap = round(win_overlap * nperseg)
 
-    # Call welch() on a surrogate array to get the output frequencies
+    # Frequencies from dummy signal
     xz = np.zeros(len(tt0))
-    ff, _ = sig.welch(xz, fs=fs, nperseg=nperseg, noverlap=noverlap)
+    ff, _ = sig.welch(
+        xz,
+        fs=fs,
+        window=window,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        detrend=detrend,
+        scaling=scaling,
+        average=average,
+        axis=-1,
+    )
 
-    # Wrapping function for welch() that returns a single variable (power)
-    def f(X, fs, nperseg, noverlap):
+    def f(X, fs, window, nperseg, noverlap, detrend, scaling, average):
         _, S = sig.welch(
-            X, fs=fs, nperseg=nperseg, noverlap=noverlap, axis=-1)
+            X,
+            fs=fs,
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            detrend=detrend,
+            scaling=scaling,
+            average=average,
+            axis=-1,
+        )
         return S
-    
-    # Apply welch() to xr.DataArray (with dask support)
+
     source_attrs = copy.deepcopy(X_in.attrs)
     W = xr.apply_ufunc(
         f, X_in,
-        kwargs={'fs': fs, 'nperseg': nperseg, 'noverlap': noverlap},
+        kwargs={
+            'fs': fs,
+            'window': window,
+            'nperseg': nperseg,
+            'noverlap': noverlap,
+            'detrend': detrend,
+            'scaling': scaling,
+            'average': average,
+        },
         input_core_dims=[[time_dim]],
         output_core_dims=[['freq']],
-        dask_gufunc_kwargs={'output_sizes': {'freq': len(ff)}},
-        vectorize=False, dask='parallelized',
-        output_dtypes=[np.float64]
+        dask_gufunc_kwargs={'output_sizes': {'freq': len(ff)}} ,
+        vectorize=False,
+        dask='parallelized',
+        output_dtypes=[np.float64],
     )
-    W = W.assign_coords({'freq': ('freq', ff)})
-    
-    # Select freq. range of interest
-    W = W.sel(freq=slice(None, fmax))
 
-    # Compute the result if needed, write the params to W.attrs
+    W = W.assign_coords({'freq': ('freq', ff)})
+    W = W.sel(freq=slice(fmin, fmax))
+
     params = {
         'win_len': win_len,
         'win_overlap': win_overlap,
+        'fmin': fmin,
         'fmax': fmax,
         'fs': fs,
         'time_dim': time_dim,
+        'window': window,
+        'detrend': detrend,
+        'scaling': scaling,
+        'average': average,
     }
+
     return _finalize_result(
         W, source_attrs, 'calc_xr_welch', params, compute, store_proc_info
     )

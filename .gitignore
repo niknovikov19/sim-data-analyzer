@@ -8,3 +8,4 @@ dev_scratch/data_src/**/*.pkl
 dev_scratch/data_src/**/*.nc
 dev_scratch/data_proc/**/*.pkl
 dev_scratch/data_proc/**/*.nc
+dev_scratch/data_proc/**/*.npz
