@@ -9,14 +9,14 @@ Pairwise population-rate coherence and phase-difference matrices derived from ca
 - Rate cache used: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/a1_lfp_30s_0_rates_dt_0.001.nc`
 - Intermediate/cache root: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0`
 - Coherence cache dir: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/coherence_cache`
-- Coherence cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/coherence_cache/rate_coher_allpops__pops_n43_fa08c11cde__dt_0p001__t_10_30__win_2__ov_0p5__fmax_100__v1.nc`
-- Results folder: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/results/a1_lfp_30s_0/rate_coher/rate_coher_allpops__win_2_over_0p5_fband_8_14`
+- Coherence cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/coherence_cache/rate_coher_verify_vectors__pops_n3_dbbeb3a397__dt_0p001__t_10_30__win_2__ov_0p5__fmax_100__v1.nc`
+- Results folder: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/results/a1_lfp_30s_0/verify/rate_coher_verify_vectors__win_2_over_0p5_fband_8_14`
 
 ## Parameters
 
 ```json
 {
-  "ANALYSIS_LABEL": "rate_coher_allpops",
+  "ANALYSIS_LABEL": "rate_coher_verify_vectors",
   "T_LIMITS": [
     10.0,
     30.0
@@ -29,10 +29,13 @@ Pairwise population-rate coherence and phase-difference matrices derived from ca
     8,
     14
   ],
-  "POP_NAMES": null,
+  "POP_NAMES": [
+    "IT3",
+    "PV3",
+    "SOM3"
+  ],
   "DO_PLOT_VECTORS": true,
-  "BASIS_POP": "SOM3",
-  "VECTOR_COLOR_SCHEME": "cell_type",
+  "BASIS_POP": "IT3",
   "CSV_ROUND_DIGITS": 3,
   "COHERENCE_THRESHOLD": 0.5,
   "pair_enumeration": "self pairs plus unordered cross-pop pairs in filtered pop order",
@@ -45,12 +48,12 @@ Pairwise population-rate coherence and phase-difference matrices derived from ca
 - Coherence CSV: `coherence.csv`
 - Phase CSV: `phase.csv`
 - Matrix-summary PNGs: `matrices.png`, `matrices__thr_0p5.png`
-- Vector PNG: `vectors__basis_SOM3__thr_0p5.png`
+- Vector PNG: `vectors__basis_IT3__thr_0p5.png`
 
 ## Populations
 
-- Included populations: IT2, IT3, ITP4, ITS4, IT5A, IT5B, IT6, CT5A, CT5B, CT6, PT5B, PV2, PV3, PV4, PV5A, PV5B, PV6, SOM2, SOM3, SOM4, SOM5A, SOM5B, SOM6, VIP2, VIP3, VIP4, VIP5A, VIP5B, VIP6, NGF1, NGF2, NGF3, NGF4, NGF5A, NGF5B, NGF6, TC, HTC, TI, IRE, TCM, TIM, IREM
-- Number of analyzed pairs: 946
+- Included populations: IT3, PV3, SOM3
+- Number of analyzed pairs: 6
 - Matrix plotting enabled: True
 - Vector plotting enabled: True
 - Coherence threshold: 0.5 (masked view hatches weak coherence cells and whitens their phase cells)

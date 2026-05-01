@@ -78,6 +78,53 @@ class TestRateCoherenceHelpers(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'COHERENCE_THRESHOLD'):
             self.module._normalize_coherence_threshold(1.1)
 
+    def test_resolve_basis_pop_requires_member_of_analyzed_set(self):
+        self.assertEqual(self.module._resolve_basis_pop(['IT2', 'PV3'], 'IT2'), 'IT2')
+        with self.assertRaisesRegex(ValueError, 'BASIS_POP'):
+            self.module._resolve_basis_pop(['IT2', 'PV3'], 'SOM3')
+
+    def test_normalize_vector_color_scheme_accepts_supported_values(self):
+        self.assertEqual(self.module._normalize_vector_color_scheme('cell_type'), 'cell_type')
+        self.assertEqual(self.module._normalize_vector_color_scheme('Layer'), 'layer')
+
+    def test_normalize_vector_color_scheme_rejects_invalid_values(self):
+        with self.assertRaisesRegex(ValueError, 'VECTOR_COLOR_SCHEME'):
+            self.module._normalize_vector_color_scheme('pop')
+
+    def test_get_pop_cell_type_group_maps_supported_prefixes(self):
+        self.assertEqual(self.module._get_pop_cell_type_group('IT3'), 'PYR')
+        self.assertEqual(self.module._get_pop_cell_type_group('CT6'), 'PYR')
+        self.assertEqual(self.module._get_pop_cell_type_group('PT5B'), 'PYR')
+        self.assertEqual(self.module._get_pop_cell_type_group('PV3'), 'PV')
+        self.assertEqual(self.module._get_pop_cell_type_group('SOM5A'), 'SOM')
+        self.assertEqual(self.module._get_pop_cell_type_group('VIP2'), 'VIP')
+        self.assertEqual(self.module._get_pop_cell_type_group('NGF5A'), 'NGF')
+        self.assertEqual(self.module._get_pop_cell_type_group('TC'), 'TC')
+        self.assertEqual(self.module._get_pop_cell_type_group('HTC'), 'TC')
+        self.assertEqual(self.module._get_pop_cell_type_group('TCM'), 'TC')
+        self.assertEqual(self.module._get_pop_cell_type_group('TI'), 'TI')
+        self.assertEqual(self.module._get_pop_cell_type_group('TIM'), 'TI')
+        self.assertEqual(self.module._get_pop_cell_type_group('IRE'), 'IRE')
+        self.assertEqual(self.module._get_pop_cell_type_group('IREM'), 'IRE')
+
+    def test_get_pop_layer_group_maps_cortical_and_thalamic_names(self):
+        self.assertEqual(self.module._get_pop_layer_group('IT2'), 'L2')
+        self.assertEqual(self.module._get_pop_layer_group('PV3'), 'L3')
+        self.assertEqual(self.module._get_pop_layer_group('SOM4'), 'L4')
+        self.assertEqual(self.module._get_pop_layer_group('IT5A'), 'L5A')
+        self.assertEqual(self.module._get_pop_layer_group('PV5B'), 'L5B')
+        self.assertEqual(self.module._get_pop_layer_group('CT6'), 'L6')
+        self.assertEqual(self.module._get_pop_layer_group('TC'), 'THAL')
+        self.assertEqual(self.module._get_pop_layer_group('IREM'), 'THAL')
+
+    def test_get_vector_style_returns_group_and_color(self):
+        group, color = self.module._get_vector_style('PV3', 'cell_type')
+        self.assertEqual(group, 'PV')
+        self.assertEqual(color, self.module.CELL_TYPE_COLORS['PV'])
+        group, color = self.module._get_vector_style('IT5A', 'layer')
+        self.assertEqual(group, 'L5A')
+        self.assertEqual(color, self.module.LAYER_COLORS['L5A'])
+
     def test_get_matrix_png_names_returns_plain_and_masked_versions(self):
         self.assertEqual(
             self.module._get_matrix_png_names(None),
@@ -89,6 +136,16 @@ class TestRateCoherenceHelpers(unittest.TestCase):
                 'matrices.png',
                 'matrices__thr_0p4.png',
             ],
+        )
+
+    def test_get_vector_png_name_uses_basis_and_optional_threshold(self):
+        self.assertEqual(
+            self.module._get_vector_png_name('IT2', None),
+            'vectors__basis_IT2.png',
+        )
+        self.assertEqual(
+            self.module._get_vector_png_name('IT2', 0.4),
+            'vectors__basis_IT2__thr_0p4.png',
         )
 
     def test_compute_band_mean_tables_uses_complex_mean_and_symmetry(self):
@@ -143,11 +200,110 @@ class TestRateCoherenceHelpers(unittest.TestCase):
         self.assertAlmostEqual(coherence_plot[0, 1], 0.2)
         self.assertAlmostEqual(phase_plot[1, 0], -0.6)
 
+    def test_build_basis_vectors_uses_basis_row_and_threshold(self):
+        pop_names = ['IT2', 'PV3', 'SOM3']
+        coherence_table = np.array([
+            [1.0, 0.8, 0.2],
+            [0.8, 1.0, 0.4],
+            [0.2, 0.4, 1.0],
+        ])
+        phase_table = np.array([
+            [0.0, np.pi / 2, -np.pi / 4],
+            [-np.pi / 2, 0.0, 0.2],
+            [np.pi / 4, -0.2, 0.0],
+        ])
+        vectors = self.module._build_basis_vectors(
+            pop_names,
+            coherence_table,
+            phase_table,
+            basis_pop='IT2',
+            coherence_threshold=0.5,
+        )
+        self.assertEqual([item['pop'] for item in vectors], ['IT2', 'PV3'])
+        self.assertAlmostEqual(vectors[0]['endpoint'].real, 1.0)
+        self.assertAlmostEqual(vectors[0]['endpoint'].imag, 0.0)
+        self.assertAlmostEqual(vectors[1]['endpoint'].real, 0.0, places=12)
+        self.assertAlmostEqual(vectors[1]['endpoint'].imag, 0.8)
+
     def test_get_phase_plot_limit_ignores_masked_values(self):
         phase_plot = np.array([[0.0, 0.1], [-2.0, 0.0]])
         plot_mask = np.array([[True, False], [True, True]])
         actual = self.module._get_phase_plot_limit(phase_plot, plot_mask, fallback=np.pi)
         self.assertAlmostEqual(actual, 0.1)
+
+    def test_get_vector_axis_limits_focus_on_visible_cluster_and_origin(self):
+        endpoints = np.array([0.9 + 0.0j, 0.6 - 0.4j, 0.7 - 0.1j], dtype=np.complex128)
+        xlim, ylim = self.module._get_vector_axis_limits(endpoints)
+        self.assertLess(xlim[0], 0.0)
+        self.assertGreater(xlim[1], 0.9)
+        self.assertLess(ylim[0], -0.4)
+        self.assertGreater(ylim[1], 0.0)
+        self.assertNotAlmostEqual(abs(xlim[0]), abs(xlim[1]))
+
+    def test_get_vector_label_offset_returns_directional_offsets(self):
+        dx, dy, ha, va = self.module._get_vector_label_offset(0.8 + 0.0j, 0)
+        self.assertGreater(dx, 0.0)
+        self.assertIn(ha, {'left', 'right'})
+        self.assertIn(va, {'bottom', 'top'})
+        dx2, dy2, _, _ = self.module._get_vector_label_offset(0.8 + 0.0j, 1)
+        self.assertNotEqual(dy, dy2)
+
+    def test_relax_vector_labels_separates_overlapping_positions(self):
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(4, 4))
+        vectors = [
+            {'pop': 'A', 'endpoint': complex(0.8, 0.0), 'coherence': 0.8},
+            {'pop': 'B', 'endpoint': complex(0.8, 0.0), 'coherence': 0.8},
+        ]
+        annotations = []
+        for idx, item in enumerate(vectors):
+            dx, dy, ha, va = self.module._get_vector_label_offset(item['endpoint'], idx)
+            ann = ax.annotate(
+                item['pop'],
+                xy=(item['endpoint'].real, item['endpoint'].imag),
+                xytext=(10.0, 4.0),
+                textcoords='offset points',
+                ha=ha,
+                va=va,
+            )
+            annotations.append(ann)
+        initial_positions = [tuple(ann.get_position()) for ann in annotations]
+        self.module._relax_vector_labels(fig, ax, vectors, annotations, n_iter=20)
+        final_positions = [tuple(ann.get_position()) for ann in annotations]
+        plt.close(fig)
+        self.assertNotEqual(initial_positions, final_positions)
+
+    def test_expand_vector_limits_for_annotations_includes_label_box(self):
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(4, 4))
+        ax.set_xlim(-0.1, 1.0)
+        ax.set_ylim(-0.2, 0.2)
+        ann = ax.annotate(
+            'LONG_LABEL',
+            xy=(1.0, 0.0),
+            xytext=(18.0, 0.0),
+            textcoords='offset points',
+            ha='left',
+            va='center',
+        )
+        xlim2, ylim2 = self.module._expand_vector_limits_for_annotations(
+            fig,
+            ax,
+            (-0.1, 1.0),
+            (-0.2, 0.2),
+            [ann],
+        )
+        plt.close(fig)
+        self.assertGreater(xlim2[1], 1.0)
+        self.assertLessEqual(xlim2[0], -0.1)
+        self.assertLessEqual(ylim2[0], -0.2)
+        self.assertGreaterEqual(ylim2[1], 0.2)
 
     def test_make_matrix_plot_writes_plain_and_masked_pngs(self):
         pop_names = ['IT2', 'PV3']
@@ -180,6 +336,24 @@ class TestRateCoherenceHelpers(unittest.TestCase):
             self.assertGreater(plain_png.stat().st_size, 0)
             self.assertTrue(masked_png.exists())
             self.assertGreater(masked_png.stat().st_size, 0)
+
+    def test_make_vector_plot_writes_png(self):
+        vectors = [
+            {'pop': 'IT2', 'endpoint': complex(1.0, 0.0), 'coherence': 1.0},
+            {'pop': 'PV3', 'endpoint': complex(0.2, 0.6), 'coherence': 0.632},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath_png = Path(tmpdir) / 'vectors.png'
+            self.module._make_vector_plot(
+                fpath_png,
+                vectors,
+                basis_pop='IT2',
+                fband=(8.0, 14.0),
+                coherence_threshold=0.5,
+                color_scheme='cell_type',
+            )
+            self.assertTrue(fpath_png.exists())
+            self.assertGreater(fpath_png.stat().st_size, 0)
 
     def test_load_or_compute_coherence_cache_loads_existing_dataset(self):
         coh_ds = xr.Dataset(

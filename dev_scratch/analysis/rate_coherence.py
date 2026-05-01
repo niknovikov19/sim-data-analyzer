@@ -52,10 +52,35 @@ FMAX = 100
 FBAND = (8, 14)
 
 DO_PLOT_MATRICES = 1
+DO_PLOT_VECTORS = 1
+BASIS_POP = 'SOM3'
+VECTOR_COLOR_SCHEME = 'cell_type'
 COHERENCE_THRESHOLD = 0.5
 CSV_ROUND_DIGITS = 3
 
 COHERCACHE_VERSION = 'v1'
+
+CELL_TYPE_COLORS = {
+    'PYR': '#1f6feb',
+    'PV': '#d29922',
+    'SOM': '#f85149',
+    'VIP': '#7ee787',
+    'NGF': '#bc8cff',
+    'TC': '#58a6ff',
+    'TI': '#ffa657',
+    'IRE': '#ff7b72',
+}
+
+LAYER_COLORS = {
+    'L1': '#8c564b',
+    'L2': '#1f77b4',
+    'L3': '#ff7f0e',
+    'L4': '#2ca02c',
+    'L5A': '#d62728',
+    'L5B': '#9467bd',
+    'L6': '#17becf',
+    'THAL': '#7f7f7f',
+}
 
 
 def _resolve_analysis_pop_names(all_pop_names, requested_pop_names=None):
@@ -167,6 +192,89 @@ def _normalize_coherence_threshold(coherence_threshold):
     return coherence_threshold
 
 
+def _resolve_basis_pop(pop_names, basis_pop: str) -> str:
+    """Validate that the configured basis population is in the analyzed set."""
+    if not isinstance(basis_pop, str) or (not basis_pop):
+        raise ValueError('BASIS_POP should be a non-empty population name')
+    if basis_pop not in list(pop_names):
+        raise ValueError(
+            f'BASIS_POP {basis_pop!r} is not present in the analyzed populations: {list(pop_names)}'
+        )
+    return basis_pop
+
+
+def _normalize_vector_color_scheme(color_scheme: str) -> str:
+    """Validate the configured vector color scheme."""
+    if not isinstance(color_scheme, str):
+        raise ValueError('VECTOR_COLOR_SCHEME should be a string')
+    color_scheme = color_scheme.strip().lower()
+    if color_scheme not in {'cell_type', 'layer'}:
+        raise ValueError("VECTOR_COLOR_SCHEME should be either 'cell_type' or 'layer'")
+    return color_scheme
+
+
+def _strip_pop_suffix(pop_name: str) -> str:
+    """Remove scratch-only suffixes before group parsing."""
+    pop_name = str(pop_name)
+    if pop_name.endswith('_frz'):
+        return pop_name[:-4]
+    return pop_name
+
+
+def _get_pop_cell_type_group(pop_name: str) -> str:
+    """Map one population name to its coarse cell-type color group."""
+    pop_name = _strip_pop_suffix(pop_name).upper()
+    if pop_name.startswith(('IT', 'CT', 'PT')):
+        return 'PYR'
+    if pop_name.startswith('PV'):
+        return 'PV'
+    if pop_name.startswith('SOM'):
+        return 'SOM'
+    if pop_name.startswith('VIP'):
+        return 'VIP'
+    if pop_name.startswith('NGF'):
+        return 'NGF'
+    if pop_name.startswith(('HTC', 'TCM', 'TC')):
+        return 'TC'
+    if pop_name.startswith(('TIM', 'TI')):
+        return 'TI'
+    if pop_name.startswith(('IREM', 'IRE')):
+        return 'IRE'
+    raise ValueError(f'Could not infer cell-type group from population name {pop_name!r}')
+
+
+def _get_pop_layer_group(pop_name: str) -> str:
+    """Map one population name to its layer color group."""
+    pop_name = _strip_pop_suffix(pop_name).upper()
+    if pop_name in {'TC', 'HTC', 'TCM', 'TI', 'TIM', 'IRE', 'IREM'}:
+        return 'THAL'
+    if pop_name.endswith('5A'):
+        return 'L5A'
+    if pop_name.endswith('5B'):
+        return 'L5B'
+    if pop_name.endswith('6'):
+        return 'L6'
+    if pop_name.endswith('4'):
+        return 'L4'
+    if pop_name.endswith('3'):
+        return 'L3'
+    if pop_name.endswith('2'):
+        return 'L2'
+    if pop_name.endswith('1'):
+        return 'L1'
+    raise ValueError(f'Could not infer layer group from population name {pop_name!r}')
+
+
+def _get_vector_style(pop_name: str, color_scheme: str):
+    """Resolve the display group label and color for one vector."""
+    color_scheme = _normalize_vector_color_scheme(color_scheme)
+    if color_scheme == 'cell_type':
+        group = _get_pop_cell_type_group(pop_name)
+        return group, CELL_TYPE_COLORS[group]
+    group = _get_pop_layer_group(pop_name)
+    return group, LAYER_COLORS[group]
+
+
 def _round_metric_value(value: float, round_digits):
     """Optionally round one metric value before CSV export."""
     if not np.isfinite(value):
@@ -214,6 +322,15 @@ def _get_matrix_png_names(coherence_threshold):
     if coherence_threshold is not None:
         names.append(_get_matrix_png_name(coherence_threshold, masked=True))
     return names
+
+
+def _get_vector_png_name(basis_pop: str, coherence_threshold=None) -> str:
+    """Construct the complex-plane vector PNG filename."""
+    coherence_threshold = _normalize_coherence_threshold(coherence_threshold)
+    fname = f'vectors__basis_{basis_pop}'
+    if coherence_threshold is not None:
+        fname += f'__thr_{_format_tag_value(coherence_threshold)}'
+    return f'{fname}.png'
 
 
 def _make_pair_label(pop_i: str, pop_j: str) -> str:
@@ -420,6 +537,35 @@ def _compute_band_mean_tables_from_cache(coh_ds, pop_names):
     return coherence_table, phase_table, complex_by_pair
 
 
+def _build_basis_vectors(pop_names, coherence_table, phase_table, basis_pop: str, coherence_threshold):
+    """Build complex endpoints for the basis-anchored coherence vector plot."""
+    basis_pop = _resolve_basis_pop(pop_names, basis_pop)
+    coherence_threshold = _normalize_coherence_threshold(coherence_threshold)
+    pop_names = list(pop_names)
+    basis_idx = pop_names.index(basis_pop)
+    vectors = []
+
+    # Anchor the basis population to a unit vector on the positive real axis.
+    vectors.append({'pop': basis_pop, 'endpoint': complex(1.0, 0.0), 'coherence': 1.0})
+
+    # Use the basis-row coherence magnitude and phase to build the remaining vectors.
+    for pop_idx, pop_name in enumerate(pop_names):
+        if pop_name == basis_pop:
+            continue
+
+        coherence = float(coherence_table[basis_idx, pop_idx])
+        phase = float(phase_table[basis_idx, pop_idx])
+        if (not np.isfinite(coherence)) or (not np.isfinite(phase)):
+            continue
+        if (coherence_threshold is not None) and (coherence < coherence_threshold):
+            continue
+
+        endpoint = complex(coherence * np.cos(phase), coherence * np.sin(phase))
+        vectors.append({'pop': pop_name, 'endpoint': endpoint, 'coherence': coherence})
+
+    return vectors
+
+
 def _prepare_matrix_tables_for_plot(coherence_table, phase_table, coherence_threshold):
     """Prepare plotted coherence/phase tables and masks for visualization."""
     coherence_threshold = _normalize_coherence_threshold(coherence_threshold)
@@ -473,6 +619,244 @@ def _overlay_coherence_mask(ax, weak_mask, edgecolor=(0.45, 0.45, 0.45, 0.95), h
                 fill=True,
             )
         )
+
+
+def _make_vector_plot(
+        fpath_out: Path,
+        vectors,
+        basis_pop: str,
+        fband,
+        coherence_threshold,
+        color_scheme: str,
+        ) -> None:
+    """Render basis-anchored coherence vectors on the complex plane."""
+    color_scheme = _normalize_vector_color_scheme(color_scheme)
+    vectors = list(vectors)
+    endpoints = np.asarray([item['endpoint'] for item in vectors], dtype=np.complex128)
+    xlim, ylim = _get_vector_axis_limits(endpoints)
+
+    fig, ax = plt.subplots(figsize=(8.2, 7.2))
+    ax.axhline(0.0, color='0.5', lw=1)
+    ax.axvline(0.0, color='0.5', lw=1)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+
+    # Draw each population as a vector from the origin and label near its endpoint.
+    legend_groups = {}
+    sorted_vectors = sorted(
+        vectors,
+        key=lambda item: float(np.angle(complex(item['endpoint'])))
+    )
+    label_annotations = []
+    for idx, item in enumerate(sorted_vectors):
+        endpoint = complex(item['endpoint'])
+        group_label, color = _get_vector_style(item['pop'], color_scheme)
+        legend_groups[group_label] = color
+        ax.annotate(
+            '',
+            xy=(endpoint.real, endpoint.imag),
+            xytext=(0.0, 0.0),
+            arrowprops={
+                'arrowstyle': '->',
+                'lw': 2,
+                'color': color,
+                'shrinkA': 0,
+                'shrinkB': 0,
+                'zorder': 2,
+            },
+            zorder=2,
+        )
+        label_dx, label_dy, ha, va = _get_vector_label_offset(endpoint, idx)
+        ann = ax.annotate(
+            item['pop'],
+            xy=(endpoint.real, endpoint.imag),
+            xytext=(label_dx, label_dy),
+            textcoords='offset points',
+            ha=ha,
+            va=va,
+            fontsize=8,
+            fontfamily='DejaVu Sans Mono',
+            bbox={'boxstyle': 'round,pad=0.15', 'facecolor': 'white', 'edgecolor': 'none', 'alpha': 0.7},
+            annotation_clip=False,
+            zorder=10,
+        )
+        label_annotations.append(ann)
+    _relax_vector_labels(fig, ax, sorted_vectors, label_annotations)
+
+    # Show the active group-to-color mapping alongside the plot.
+    handles = [
+        plt.Line2D([0], [0], color=color, lw=2, label=group)
+        for group, color in legend_groups.items()
+    ]
+    if handles:
+        ax.legend(handles=handles, title=color_scheme.replace('_', ' '), loc='upper left')
+
+    xlim, ylim = _expand_vector_limits_for_annotations(fig, ax, xlim, ylim, label_annotations)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_xlabel('real')
+    ax.set_ylabel('imag')
+    ax.grid(True, alpha=0.3)
+    ax.set_title(
+        f'Basis={basis_pop}, {_get_fband_tag(fband)}, {color_scheme}, '
+        f'thr={_normalize_coherence_threshold(coherence_threshold)}'
+    )
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.09, top=0.90)
+    fig.savefig(fpath_out, dpi=150)
+    plt.close(fig)
+
+
+def _get_vector_axis_limits(endpoints, pad_fraction: float = 0.18, min_half_span: float = 0.2):
+    """Build non-symmetric plot limits that keep the visible cluster and origin in frame."""
+    endpoints = np.asarray(endpoints, dtype=np.complex128)
+    if endpoints.size == 0:
+        return (-1.05, 1.05), (-1.05, 1.05)
+
+    xvals = np.concatenate([endpoints.real, np.array([0.0])])
+    yvals = np.concatenate([endpoints.imag, np.array([0.0])])
+    xmin = float(np.min(xvals))
+    xmax = float(np.max(xvals))
+    ymin = float(np.min(yvals))
+    ymax = float(np.max(yvals))
+
+    xspan = max(xmax - xmin, min_half_span)
+    yspan = max(ymax - ymin, min_half_span)
+    xpad = max(xspan * pad_fraction, 0.05)
+    ypad = max(yspan * pad_fraction, 0.05)
+    return (xmin - xpad, xmax + xpad), (ymin - ypad, ymax + ypad)
+
+
+def _get_vector_label_offset(endpoint: complex, idx: int):
+    """Offset the label away from the arrow tip with a small alternating tangential shift."""
+    endpoint = complex(endpoint)
+    if abs(endpoint) <= 1e-12:
+        return 8.0, 8.0, 'left', 'bottom'
+
+    angle = float(np.angle(endpoint))
+    radial = np.array([np.cos(angle), np.sin(angle)])
+    tangential = np.array([-np.sin(angle), np.cos(angle)])
+    tangent_sign = 0.5 if (idx % 2 == 0) else -1.0
+    offset = radial * 1 + tangential * (0 * tangent_sign)
+    #ha = 'left' if offset[0] >= 0 else 'right'
+    #va = 'bottom' if offset[1] >= 0 else 'top'
+    ha = 'center'
+    va = 'center'
+    return float(offset[0]), float(offset[1]), ha, va
+
+
+def _expanded_bbox(bbox, margin_px: float):
+    """Expand a renderer bbox by a small pixel margin."""
+    return bbox.expanded(
+        (bbox.width + 2 * margin_px) / max(bbox.width, 1e-12),
+        (bbox.height + 2 * margin_px) / max(bbox.height, 1e-12),
+    )
+
+
+def _expand_vector_limits_for_annotations(
+        fig,
+        ax,
+        xlim,
+        ylim,
+        annotations,
+        margin_px: float = 6.0,
+        pad_fraction: float = 0.03,
+        ):
+    """Expand data limits so relaxed label boxes stay within the visible axes region."""
+    if not annotations:
+        return xlim, ylim
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    inv = ax.transData.inverted()
+    xmin, xmax = xlim
+    ymin, ymax = ylim
+
+    for ann in annotations:
+        bbox = _expanded_bbox(ann.get_window_extent(renderer=renderer), margin_px)
+        corners = np.array([
+            [bbox.x0, bbox.y0],
+            [bbox.x0, bbox.y1],
+            [bbox.x1, bbox.y0],
+            [bbox.x1, bbox.y1],
+        ])
+        data_corners = inv.transform(corners)
+        xmin = min(xmin, float(np.min(data_corners[:, 0])))
+        xmax = max(xmax, float(np.max(data_corners[:, 0])))
+        ymin = min(ymin, float(np.min(data_corners[:, 1])))
+        ymax = max(ymax, float(np.max(data_corners[:, 1])))
+
+    xpad = max((xmax - xmin) * pad_fraction, 0.02)
+    ypad = max((ymax - ymin) * pad_fraction, 0.02)
+    return (xmin - xpad, xmax + xpad), (ymin - ypad, ymax + ypad)
+
+
+def _relax_vector_labels(fig, ax, vectors, annotations, margin_px: float = 4.0, n_iter: int = 80):
+    """Nudge vector labels in offset-point space until obvious overlaps are reduced."""
+    if (not vectors) or (not annotations):
+        return
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    dpi_scale = 72.0 / fig.dpi
+    endpoint_pixels = [
+        ax.transData.transform((complex(item['endpoint']).real, complex(item['endpoint']).imag))
+        for item in vectors
+    ]
+
+    for _ in range(n_iter):
+        moved = False
+        fig.canvas.draw()
+        bboxes = [_expanded_bbox(ann.get_window_extent(renderer=renderer), margin_px) for ann in annotations]
+
+        # Push overlapping labels apart in display space.
+        for idx_i in range(len(annotations)):
+            for idx_j in range(idx_i + 1, len(annotations)):
+                bbox_i = bboxes[idx_i]
+                bbox_j = bboxes[idx_j]
+                if not bbox_i.overlaps(bbox_j):
+                    continue
+
+                center_i = np.array([(bbox_i.x0 + bbox_i.x1) * 0.5, (bbox_i.y0 + bbox_i.y1) * 0.5])
+                center_j = np.array([(bbox_j.x0 + bbox_j.x1) * 0.5, (bbox_j.y0 + bbox_j.y1) * 0.5])
+                delta = center_j - center_i
+                if np.linalg.norm(delta) < 1e-9:
+                    delta = np.array([1.0, -1.0 if (idx_j % 2) else 1.0])
+                direction = delta / np.linalg.norm(delta)
+                push_points = direction * 1.2 * dpi_scale
+
+                pos_i = np.array(annotations[idx_i].get_position(), dtype=float)
+                pos_j = np.array(annotations[idx_j].get_position(), dtype=float)
+                annotations[idx_i].set_position(tuple(pos_i - push_points))
+                annotations[idx_j].set_position(tuple(pos_j + push_points))
+                moved = True
+
+        # Keep labels from sitting directly on arrow tips by nudging them outward.
+        fig.canvas.draw()
+        bboxes = [_expanded_bbox(ann.get_window_extent(renderer=renderer), margin_px) for ann in annotations]
+        for idx, ann in enumerate(annotations):
+            endpoint_px = endpoint_pixels[idx]
+            bbox = bboxes[idx]
+            point_inside = (
+                (bbox.x0 <= endpoint_px[0] <= bbox.x1) and
+                (bbox.y0 <= endpoint_px[1] <= bbox.y1)
+            )
+            if not point_inside:
+                continue
+
+            endpoint = complex(vectors[idx]['endpoint'])
+            if abs(endpoint) <= 1e-12:
+                push_points = np.array([3.0, 3.0])
+            else:
+                angle = float(np.angle(endpoint))
+                radial = np.array([np.cos(angle), np.sin(angle)])
+                push_points = radial * 2.0
+            pos = np.array(ann.get_position(), dtype=float)
+            ann.set_position(tuple(pos + push_points))
+            moved = True
+
+        if not moved:
+            break
 
 
 def _make_matrix_plot(
@@ -542,6 +926,7 @@ def _write_metadata(
         coherence_csv_name: str,
         phase_csv_name: str,
         matrix_png_names,
+        vector_png_name: str | None,
         requested_pop_names,
         csv_round_digits,
         coherence_threshold,
@@ -556,6 +941,9 @@ def _write_metadata(
         'FMAX': FMAX,
         'FBAND': list(FBAND),
         'POP_NAMES': None if requested_pop_names is None else list(requested_pop_names),
+        'DO_PLOT_VECTORS': bool(DO_PLOT_VECTORS),
+        'BASIS_POP': BASIS_POP,
+        'VECTOR_COLOR_SCHEME': _normalize_vector_color_scheme(VECTOR_COLOR_SCHEME),
         'CSV_ROUND_DIGITS': _normalize_round_digits(csv_round_digits),
         'COHERENCE_THRESHOLD': _normalize_coherence_threshold(coherence_threshold),
         'pair_enumeration': 'self pairs plus unordered cross-pop pairs in filtered pop order',
@@ -592,16 +980,22 @@ def _write_metadata(
             + ', '.join(f'`{name}`' for name in matrix_png_names)
             if matrix_png_names else '- Matrix-summary PNGs: not generated'
         ),
+        (
+            f'- Vector PNG: `{vector_png_name}`'
+            if vector_png_name is not None else '- Vector PNG: not generated'
+        ),
         '',
         '## Populations',
         '',
         f'- Included populations: {", ".join(pop_names)}',
         f'- Number of analyzed pairs: {pair_count}',
         f'- Matrix plotting enabled: {bool(DO_PLOT_MATRICES)}',
+        f'- Vector plotting enabled: {bool(DO_PLOT_VECTORS)}',
         (
             f'- Coherence threshold: {_normalize_coherence_threshold(coherence_threshold)} '
             '(masked view hatches weak coherence cells and whitens their phase cells)'
         ),
+        '- Vector plot reuses the band-averaged complex coherence and the matrix coherence threshold.',
     ]
     fpath_md.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
@@ -620,6 +1014,7 @@ def main() -> None:
     coherence_csv_name = 'coherence.csv'
     phase_csv_name = 'phase.csv'
     matrix_png_names = _get_matrix_png_names(COHERENCE_THRESHOLD)
+    vector_png_name = None
 
     sim_result = None
     rate_cache = get_rates_cache_path(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT, RATE_DT)
@@ -690,6 +1085,26 @@ def main() -> None:
                 use_mask=True,
             )
 
+    if DO_PLOT_VECTORS:
+        basis_pop = _resolve_basis_pop(pop_names, BASIS_POP)
+        vector_png_name = _get_vector_png_name(basis_pop, COHERENCE_THRESHOLD)
+        print(f'Writing basis-vector PNG to {dirpath_out / vector_png_name}')
+        vectors = _build_basis_vectors(
+            pop_names,
+            coherence_table,
+            phase_table,
+            basis_pop,
+            COHERENCE_THRESHOLD,
+        )
+        _make_vector_plot(
+            dirpath_out / vector_png_name,
+            vectors,
+            basis_pop,
+            FBAND,
+            COHERENCE_THRESHOLD,
+            VECTOR_COLOR_SCHEME,
+        )
+
     _write_metadata(
         dirpath_out / 'README.md',
         dirpath_out,
@@ -701,6 +1116,7 @@ def main() -> None:
         coherence_csv_name,
         phase_csv_name,
         matrix_png_names if DO_PLOT_MATRICES else [],
+        vector_png_name,
         POP_NAMES,
         CSV_ROUND_DIGITS,
         COHERENCE_THRESHOLD,
