@@ -31,9 +31,10 @@ FPATH_SIM_RESULT = (
     DIR_PACKAGE / 'dev_scratch' / 'data_src' / 'a1_lfp_15s' / 'data_00000_seed_1000.pkl'
 )
 DIRPATH_PROC_ROOT = DIR_PACKAGE / 'dev_scratch' / 'data_proc'
+DIRPATH_RESULTS_ROOT = DIR_PACKAGE / 'dev_scratch' / 'results'
 EXP_LABEL = get_exp_label(FPATH_SIM_RESULT)
 DIRPATH_PROC = get_proc_dir(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT)
-DIRPATH_OUT = DIRPATH_PROC / 'crosscorr_demo'
+DIRPATH_OUT = DIRPATH_RESULTS_ROOT / EXP_LABEL / 'demo'
 
 T_LIMITS = (10.0, 15.0)
 RATE_DT = 5e-3

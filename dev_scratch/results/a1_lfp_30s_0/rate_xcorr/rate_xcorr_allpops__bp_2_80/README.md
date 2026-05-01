@@ -10,8 +10,8 @@ optionally restricted by `POP_NAMES` and optionally bandpass-filtered before cor
 - Rate cache used: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/a1_lfp_30s_0_rates_dt_0.001.nc`
 - Intermediate/cache root: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0`
 - Cross-correlation cache dir: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/crosscorr_cache`
-- Cross-correlation cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/crosscorr_cache/rate_xcorr_allpops__npops_43__dt_0p001__t_10_30__lag_m0p5_0p5__bp_8_14__v1.nc`
-- Results folder: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/results/a1_lfp_30s_0/rate_xcorr_allpops__bp_8_14`
+- Cross-correlation cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/a1_lfp_30s_0/crosscorr_cache/rate_xcorr_allpops__npops_43__dt_0p001__t_10_30__lag_m0p5_0p5__bp_2_80__v1.nc`
+- Results folder: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/results/a1_lfp_30s_0/rate_xcorr_allpops__bp_2_80`
 
 ## Parameters
 
@@ -31,13 +31,13 @@ optionally restricted by `POP_NAMES` and optionally bandpass-filtered before cor
   "DO_PLOT": true,
   "DO_PLOT_MATRICES": true,
   "FILTER_FBAND": [
-    8.0,
-    14.0
+    2.0,
+    80.0
   ],
   "FILTER_ORDER": 3,
   "CSV_ROUND_DIGITS": 3,
-  "MATRIX_THRESHOLD": 0.1,
-  "PLOT_AMP_THRESHOLD": 0.5,
+  "MATRIX_THRESHOLD": 0.25,
+  "PLOT_AMP_THRESHOLD": 0.25,
   "pair_enumeration": "self pairs plus unordered cross-pop pairs in filtered pop order",
   "correlation_views": [
     "raw_over_N",
@@ -53,8 +53,8 @@ optionally restricted by `POP_NAMES` and optionally bandpass-filtered before cor
 - PNG naming convention: `<pop_i>__<pop_j>.png`
 - Peak-amplitude CSV: `rate_xcorr_allpops__amp.csv`
 - Peak-lag CSV: `rate_xcorr_allpops__lag.csv`
-- Pair-PNG subfolder: `pair_pngs__thr_0p5`
-- Matrix-summary PNGs: `rate_xcorr_allpops__matrices.png`, `rate_xcorr_allpops__matrices__thr_0p1.png`
+- Pair-PNG subfolder: `pair_pngs__thr_0p25`
+- Matrix-summary PNGs: `rate_xcorr_allpops__matrices.png`, `rate_xcorr_allpops__matrices__thr_0p25.png`
 - CSV metrics come from the normalized, mean-subtracted cross-correlation peak
 
 ## Populations
@@ -62,7 +62,7 @@ optionally restricted by `POP_NAMES` and optionally bandpass-filtered before cor
 - Included populations: IT2, IT3, ITP4, ITS4, IT5A, IT5B, IT6, CT5A, CT5B, CT6, PT5B, PV2, PV3, PV4, PV5A, PV5B, PV6, SOM2, SOM3, SOM4, SOM5A, SOM5B, SOM6, VIP2, VIP3, VIP4, VIP5A, VIP5B, VIP6, NGF1, NGF2, NGF3, NGF4, NGF5A, NGF5B, NGF6, TC, HTC, TI, IRE, TCM, TIM, IREM
 - Number of analyzed pairs: 946
 - Plotting enabled: True
-- Number of pair PNGs written: 166
+- Number of pair PNGs written: 65
 - Matrix plotting enabled: True
-- Matrix threshold: 0.1 (masked view uses amplitude hatching and white lag cells for smaller |amplitude| values)
-- Pair plot threshold: 0.5 (pair PNGs use normalized, mean-subtracted peak amplitude gating)
+- Matrix threshold: 0.25 (masked view uses amplitude hatching and white lag cells for smaller |amplitude| values)
+- Pair plot threshold: 0.25 (pair PNGs use normalized, mean-subtracted peak amplitude gating)

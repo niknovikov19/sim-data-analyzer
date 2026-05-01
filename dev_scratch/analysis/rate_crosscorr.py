@@ -37,6 +37,7 @@ DIRPATH_PROC_ROOT = DIR_PACKAGE / 'dev_scratch' / 'data_proc'
 DIRPATH_RESULTS_ROOT = DIR_PACKAGE / 'dev_scratch' / 'results'
 EXP_LABEL = get_exp_label(FPATH_SIM_RESULT)
 DIRPATH_PROC = get_proc_dir(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT)
+RESULT_GROUP = 'rate_xcorr'
 
 ANALYSIS_LABEL = 'rate_xcorr_allpops'
 POP_NAMES = None
@@ -53,12 +54,12 @@ LAG_WINDOW = (-0.5, 0.5)
 FILTER_FBAND = (8, 14)
 FILTER_ORDER = 3
 
-DO_PLOT = 1
-PLOT_AMP_THRESHOLD = 0.5
+DO_PLOT = 0
+PLOT_AMP_THRESHOLD = 0.08
 
 CSV_ROUND_DIGITS = 3
 DO_PLOT_MATRICES = 1
-MATRIX_THRESHOLD = 0.1
+MATRIX_THRESHOLD = 0.5
 
 CORRCACHE_VERSION = 'v1'
 
@@ -119,7 +120,7 @@ def _get_filter_tag(filter_fband) -> str:
 
 def _get_output_dir(results_root: Path, exp_label: str, analysis_label: str, filter_fband) -> Path:
     """Construct the final results directory for this analysis configuration."""
-    return results_root / exp_label / f'{analysis_label}__{_get_filter_tag(filter_fband)}'
+    return results_root / exp_label / RESULT_GROUP / f'{analysis_label}__{_get_filter_tag(filter_fband)}'
 
 
 def _maybe_filter_rates(rates, filter_fband, filter_order: int):
@@ -454,8 +455,8 @@ def _get_matrix_png_name(analysis_label: str, matrix_threshold=None, masked: boo
     if masked and (matrix_threshold is None):
         raise ValueError('Masked matrix PNG naming requires a non-None MATRIX_THRESHOLD')
     if not masked:
-        return f'{analysis_label}__matrices.png'
-    return f'{analysis_label}__matrices__thr_{_format_tag_value(matrix_threshold)}.png'
+        return 'matrices.png'
+    return f'matrices__thr_{_format_tag_value(matrix_threshold)}.png'
 
 
 def _get_matrix_png_names(analysis_label: str, matrix_threshold):
@@ -472,11 +473,12 @@ def _prepare_matrix_tables_for_plot(amp_table, lag_table, matrix_threshold):
     matrix_threshold = _normalize_matrix_threshold(matrix_threshold)
     amp_plot = np.array(amp_table, dtype=float, copy=True)
     lag_plot = np.array(lag_table, dtype=float, copy=True)
+    diag_mask = np.eye(amp_plot.shape[0], dtype=bool)
     if matrix_threshold is None:
-        return amp_plot, lag_plot, None
+        return amp_plot, lag_plot, None, diag_mask
 
     weak_mask = np.isfinite(amp_plot) & (np.abs(amp_plot) < matrix_threshold)
-    return amp_plot, lag_plot, weak_mask
+    return amp_plot, lag_plot, weak_mask, diag_mask
 
 
 def _get_symmetric_plot_limit(values, fallback: float) -> float:
@@ -492,13 +494,19 @@ def _get_symmetric_plot_limit(values, fallback: float) -> float:
     return vmax
 
 
-def _get_lag_plot_limit(lag_plot, weak_mask, use_mask: bool, fallback: float) -> float:
-    """Get the symmetric lag limit from visible lag values in the current view."""
-    if use_mask and (weak_mask is not None):
-        visible_lags = np.array(lag_plot, dtype=float, copy=True)
-        visible_lags[np.asarray(weak_mask, dtype=bool)] = np.nan
-        return _get_symmetric_plot_limit(visible_lags, fallback=fallback)
-    return _get_symmetric_plot_limit(lag_plot, fallback=fallback)
+def _get_lag_plot_limit(lag_plot, plot_mask, fallback: float) -> float:
+    """Get the symmetric lag limit from the lag cells visible in the current view."""
+    visible_lags = np.array(lag_plot, dtype=float, copy=True)
+    if plot_mask is not None:
+        visible_lags[np.asarray(plot_mask, dtype=bool)] = np.nan
+    return _get_symmetric_plot_limit(visible_lags, fallback=fallback)
+
+
+def _get_amp_plot_limit(amp_plot, diag_mask, fallback: float) -> float:
+    """Get the symmetric amplitude limit from visible off-diagonal values."""
+    visible_amp = np.array(amp_plot, dtype=float, copy=True)
+    visible_amp[np.asarray(diag_mask, dtype=bool)] = np.nan
+    return _get_symmetric_plot_limit(visible_amp, fallback=fallback)
 
 
 def _overlay_amp_mask(ax, weak_mask, edgecolor=(0.45, 0.45, 0.45, 0.95), hatch='///') -> None:
@@ -534,13 +542,14 @@ def _make_matrix_plot(
         ) -> None:
     """Render amplitude and lag summary matrices into one PNG."""
     # Build the matrix view first so scaling and masking use the same arrays.
-    amp_plot, lag_plot, weak_mask = _prepare_matrix_tables_for_plot(
+    amp_plot, lag_plot, weak_mask, diag_mask = _prepare_matrix_tables_for_plot(
         amp_table, lag_table, matrix_threshold
     )
+    amp_abs = _get_amp_plot_limit(amp_plot, diag_mask, fallback=1.0)
+    lag_mask = diag_mask if weak_mask is None else (diag_mask | weak_mask)
     lag_abs = _get_lag_plot_limit(
         lag_plot,
-        weak_mask,
-        use_mask=use_mask,
+        lag_mask if use_mask else diag_mask,
         fallback=max(abs(float(LAG_WINDOW[0])), abs(float(LAG_WINDOW[1])), 1e-12),
     )
 
@@ -549,15 +558,16 @@ def _make_matrix_plot(
     if use_mask and (weak_mask is not None):
         lag_cmap = plt.get_cmap('bwr').copy()
         lag_cmap.set_bad(color='white')
-        lag_display = np.ma.masked_where(weak_mask, lag_plot)
-        amp_display = amp_plot
+        lag_display = np.ma.masked_where(lag_mask, lag_plot)
+        amp_display = np.ma.masked_where(diag_mask, amp_plot)
     else:
-        lag_cmap = 'bwr'
-        lag_display = lag_plot
-        amp_display = amp_plot
+        lag_cmap = plt.get_cmap('bwr').copy()
+        lag_cmap.set_bad(color='white')
+        lag_display = np.ma.masked_where(diag_mask, lag_plot)
+        amp_display = np.ma.masked_where(diag_mask, amp_plot)
 
     plot_specs = [
-        ('Peak amplitude', amp_display, {'cmap': 'bwr', 'vmin': -1.0, 'vmax': 1.0}),
+        ('Peak amplitude', amp_display, {'cmap': 'bwr', 'vmin': -amp_abs, 'vmax': amp_abs}),
         ('Peak lag (s)', lag_display, {'cmap': lag_cmap, 'vmin': -lag_abs, 'vmax': lag_abs}),
     ]
 
