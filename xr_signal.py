@@ -31,6 +31,99 @@ def _finalize_result(X_out, source_attrs, func_name, params, compute, store_proc
     return X_out
 
 
+def _validate_regular_time_coord(time_coord):
+    """Validate that a time coordinate is 1D, monotonic, and regular. """
+    if time_coord.ndim != 1:
+        raise ValueError('Time coordinate should be 1-dimensional')
+
+    tt = np.asarray(time_coord.values, dtype=float)
+    if tt.size < 2:
+        raise ValueError('Time coordinate should contain at least 2 points')
+
+    dt = np.diff(tt)
+    if np.any(dt <= 0):
+        raise ValueError('Time coordinate should be strictly increasing')
+    if not np.allclose(dt, dt[0]):
+        raise ValueError('Time coordinate should be regularly sampled')
+    return tt, float(dt[0])
+
+
+def _resolve_sampling_rate(dt, fs):
+    """Resolve sampling rate and validate it against the time step. """
+    if fs is None:
+        return round(1.0 / dt, 5)
+
+    fs = float(fs)
+    dt_fs = 1.0 / fs
+    if not np.isclose(dt_fs, dt, rtol=1e-5, atol=1e-12):
+        raise ValueError('fs is inconsistent with the time coordinate spacing')
+    return fs
+
+
+def _get_crosscorr_sample_lags(n_time, dt, lag_window):
+    """Convert a lag window in time units into integer sample lags. """
+    min_lag = -(n_time - 1)
+    max_lag = n_time - 1
+
+    if lag_window is None:
+        return np.arange(min_lag, max_lag + 1, dtype=np.int64)
+
+    lag_window_arr = np.asarray(lag_window, dtype=float)
+    if lag_window_arr.shape != (2,):
+        raise ValueError('lag_window should be a length-2 sequence')
+    if not np.all(np.isfinite(lag_window_arr)):
+        raise ValueError('lag_window values should be finite')
+
+    lag_min, lag_max = lag_window_arr.tolist()
+    if lag_min > lag_max:
+        raise ValueError('lag_window lower bound should not exceed upper bound')
+
+    tol = 1e-12
+    sample_min = int(np.ceil((lag_min / dt) - tol))
+    sample_max = int(np.floor((lag_max / dt) + tol))
+    sample_min = max(sample_min, min_lag)
+    sample_max = min(sample_max, max_lag)
+    if sample_min > sample_max:
+        return np.array([], dtype=np.int64)
+    return np.arange(sample_min, sample_max + 1, dtype=np.int64)
+
+
+def _calc_crosscorr_1d(x1, x2, sample_lags, subtract_mean, normalize, use_full):
+    """Cross-correlation for one 1D signal pair over selected lags. """
+    x1 = np.asarray(x1, dtype=float)
+    x2 = np.asarray(x2, dtype=float)
+    sample_lags = np.asarray(sample_lags, dtype=np.int64)
+
+    if subtract_mean:
+        x1 = x1 - np.mean(x1)
+        x2 = x2 - np.mean(x2)
+
+    if normalize:
+        denom = np.sqrt(np.sum(x1 * x1) * np.sum(x2 * x2))
+        if (not np.isfinite(denom)) or (denom <= np.finfo(float).eps):
+            return np.full(sample_lags.shape, np.nan, dtype=np.float64)
+    else:
+        denom = float(x1.size)
+
+    if sample_lags.size == 0:
+        return np.empty(0, dtype=np.float64)
+
+    if use_full:
+        corr = np.correlate(x1, x2, mode='full')
+        return corr / denom
+
+    out = np.empty(sample_lags.shape, dtype=np.float64)
+    for idx, lag in enumerate(sample_lags):
+        if lag == 0:
+            numer = np.sum(x1 * x2)
+        elif lag > 0:
+            numer = np.sum(x2[:-lag] * x1[lag:])
+        else:
+            numer = np.sum(x2[-lag:] * x1[:lag])
+        out[idx] = numer / denom
+    return out
+
+
 def _interp_isolated_outliers_1d(values, time_values, z_thresh, rel_neighbor_thresh):
     """Interpolate isolated one-bin outliers in a 1D time series. """
     values = np.asarray(values, dtype=float)
@@ -181,4 +274,79 @@ def filter_xr_signal(
     }
     return _finalize_result(
         Y, source_attrs, 'filter_xr_signal', params, compute, store_proc_info
+    )
+
+
+def calc_xr_crosscorr(
+        X1_in: xr.DataArray,
+        X2_in: xr.DataArray,
+        time_dim: str = 'time',
+        fs: float | None = None,
+        lag_window=None,
+        subtract_mean: bool = False,
+        normalize: bool = False,
+        compute: bool = True,
+        store_proc_info: bool = True
+        ) -> xr.DataArray:
+    """Calculate a cross-correlogram along a time dimension.
+
+    By default the output follows the legacy analyzer convention and divides by
+    the full trace length `N`. When `normalize=True`, the output is scaled by
+    the L2 energy of the processed signals instead.
+    """
+    if time_dim not in X1_in.dims or time_dim not in X2_in.dims:
+        raise ValueError(f'Time dimension {time_dim!r} is not present')
+    if X1_in.dims[-1] != time_dim or X2_in.dims[-1] != time_dim:
+        raise ValueError('Time should be the last dimension')
+
+    tt1, dt1 = _validate_regular_time_coord(X1_in.coords[time_dim])
+    tt2, dt2 = _validate_regular_time_coord(X2_in.coords[time_dim])
+    if tt1.size != tt2.size:
+        raise ValueError('Signals should have matching time lengths')
+    if not np.isclose(dt1, dt2, rtol=1e-9, atol=1e-12):
+        raise ValueError('Signals should have matching sample spacing')
+    if not np.allclose(tt1, tt2, rtol=1e-9, atol=1e-12):
+        raise ValueError('Signals should have matching time coordinates')
+
+    fs = _resolve_sampling_rate(dt1, fs)
+    sample_lags = _get_crosscorr_sample_lags(tt1.size, dt1, lag_window)
+    lag_values = sample_lags.astype(np.float64) / fs
+    use_full = lag_window is None
+
+    # Reuse the same time coordinate object so xarray broadcast/alignment
+    # does not fail on equivalent-but-not-identical float indexes.
+    X2_work = X2_in.assign_coords({time_dim: X1_in.coords[time_dim]})
+
+    source_attrs = copy.deepcopy(X1_in.attrs)
+    Y = xr.apply_ufunc(
+        _calc_crosscorr_1d,
+        X1_in,
+        X2_work,
+        xr.DataArray(sample_lags, dims=['lag']),
+        kwargs={
+            'subtract_mean': subtract_mean,
+            'normalize': normalize,
+            'use_full': use_full,
+        },
+        input_core_dims=[[time_dim], [time_dim], ['lag']],
+        output_core_dims=[['lag']],
+        dask_gufunc_kwargs={'output_sizes': {'lag': len(sample_lags)}},
+        vectorize=True,
+        dask='parallelized',
+        output_dtypes=[np.float64],
+    )
+    Y = Y.assign_coords({'lag': ('lag', lag_values)})
+
+    lag_window_attr = None
+    if lag_window is not None:
+        lag_window_attr = np.asarray(lag_window, dtype=float).tolist()
+    params = {
+        'time_dim': time_dim,
+        'fs': fs,
+        'lag_window': lag_window_attr,
+        'subtract_mean': subtract_mean,
+        'normalize': normalize,
+    }
+    return _finalize_result(
+        Y, source_attrs, 'calc_xr_crosscorr', params, compute, store_proc_info
     )
