@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pickle
 import sys
 from pathlib import Path
 
@@ -15,9 +14,14 @@ DIR_REPO = DIR_PACKAGE.parent
 if str(DIR_REPO) not in sys.path:
     sys.path.insert(0, str(DIR_REPO))
 
-from sim_data_analyzer.xr_adapters import get_lfp_xr, get_net_rate_dynamics_xr
+from sim_data_analyzer.scratch_data import (
+    get_exp_label,
+    get_proc_dir,
+    load_or_extract_lfp,
+    load_or_extract_rates,
+    load_sim_result,
+)
 from sim_data_analyzer.xr_diff import calc_xr_csd
-from sim_data_analyzer.xr_io import load_xr, save_xr
 from sim_data_analyzer.xr_signal import interp_time_outliers
 from sim_data_analyzer.xr_spect import calc_xr_cpsd
 
@@ -27,8 +31,8 @@ FPATH_SIM_RESULT = (
     DIR_PACKAGE / 'dev_scratch' / 'data_src' / 'a1_lfp_15s' / 'data_00000_seed_1000.pkl'
 )
 DIRPATH_PROC_ROOT = DIR_PACKAGE / 'dev_scratch' / 'data_proc'
-EXP_LABEL = f'{FPATH_SIM_RESULT.parent.name}_0'
-DIRPATH_PROC = DIRPATH_PROC_ROOT / EXP_LABEL
+EXP_LABEL = get_exp_label(FPATH_SIM_RESULT)
+DIRPATH_PROC = get_proc_dir(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT)
 DIRPATH_OUT = DIRPATH_PROC / 'rates_lfp_cpsd'
 
 # Time limits used for all downstream processing
@@ -62,48 +66,6 @@ def _make_output_path() -> Path:
         f'_ampx{AMPLITUDE_MULT:g}{round_part}.csv'
     )
     return DIRPATH_OUT / fname_table
-
-
-def _load_sim_result(fpath: Path) -> dict:
-    """Load a pickled NetPyNE simulation result."""
-    with fpath.open('rb') as fobj:
-        return pickle.load(fobj)
-
-
-def _load_or_extract_lfp(sim_result: dict | None):
-    """Load cached LFP or extract it from the raw simulation result."""
-    fpath_cache = DIRPATH_PROC / f'{EXP_LABEL}_lfp.nc'
-    if fpath_cache.exists():
-        print(f'Loading cached LFP: {fpath_cache}')
-        return load_xr(fpath_cache, load=True)
-
-    if sim_result is None:
-        raise ValueError('sim_result should be provided when LFP cache is missing')
-
-    print('Extracting LFP from simulation result')
-    lfp = get_lfp_xr(sim_result)
-    save_xr(lfp, fpath_cache)
-    return lfp
-
-
-def _load_or_extract_rates(sim_result: dict | None):
-    """Load cached population rate dynamics or extract them."""
-    fpath_cache = DIRPATH_PROC / f'{EXP_LABEL}_rates_dt_{RATE_DT:g}.nc'
-    if fpath_cache.exists():
-        print(f'Loading cached rates: {fpath_cache}')
-        return load_xr(fpath_cache, load=True)
-
-    if sim_result is None:
-        raise ValueError('sim_result should be provided when rate cache is missing')
-
-    print('Extracting population rate dynamics from simulation result')
-    rates = get_net_rate_dynamics_xr(
-        sim_result,
-        dt_bin=RATE_DT,
-        avg_cells=True,
-    )
-    save_xr(rates, fpath_cache)
-    return rates
 
 
 def _prepare_reference_signal(lfp) -> tuple[object, float]:
@@ -189,10 +151,10 @@ def main() -> None:
     need_raw = need_raw or not (DIRPATH_PROC / f'{EXP_LABEL}_rates_dt_{RATE_DT:g}.nc').exists()
     if need_raw:
         print(f'Loading simulation result: {FPATH_SIM_RESULT}')
-        sim_result = _load_sim_result(FPATH_SIM_RESULT)
+        sim_result = load_sim_result(FPATH_SIM_RESULT)
 
-    lfp = _load_or_extract_lfp(sim_result)
-    rates = _load_or_extract_rates(sim_result)
+    lfp = load_or_extract_lfp(sim_result, FPATH_SIM_RESULT, DIRPATH_PROC_ROOT)
+    rates = load_or_extract_rates(sim_result, FPATH_SIM_RESULT, DIRPATH_PROC_ROOT, RATE_DT)
 
     rates = rates.sel(time=slice(*T_LIMITS)).load()
     rates = _select_analysis_pops(rates)

@@ -94,10 +94,12 @@ def _calc_crosscorr_1d(x1, x2, sample_lags, subtract_mean, normalize, use_full):
     x2 = np.asarray(x2, dtype=float)
     sample_lags = np.asarray(sample_lags, dtype=np.int64)
 
+    # Apply the optional preprocessing that defines the correlation mode.
     if subtract_mean:
         x1 = x1 - np.mean(x1)
         x2 = x2 - np.mean(x2)
 
+    # Choose the legacy 1/N scaling or the normalized energy scaling.
     if normalize:
         denom = np.sqrt(np.sum(x1 * x1) * np.sum(x2 * x2))
         if (not np.isfinite(denom)) or (denom <= np.finfo(float).eps):
@@ -112,6 +114,7 @@ def _calc_crosscorr_1d(x1, x2, sample_lags, subtract_mean, normalize, use_full):
         corr = np.correlate(x1, x2, mode='full')
         return corr / denom
 
+    # When a lag window is requested, evaluate only the needed overlaps.
     out = np.empty(sample_lags.shape, dtype=np.float64)
     for idx, lag in enumerate(sample_lags):
         if lag == 0:
@@ -248,6 +251,7 @@ def filter_xr_signal(
         fs = round(1. / (tt0[1] - tt0[0]), 5)  # Round to correct for numerical errors
 
     source_attrs = copy.deepcopy(X_in.attrs)
+    # Delegate the 1D filtering kernel across all non-time dimensions.
     Y = xr.apply_ufunc(
         filter_signal,
         X_in,
@@ -294,6 +298,7 @@ def calc_xr_crosscorr(
     the full trace length `N`. When `normalize=True`, the output is scaled by
     the L2 energy of the processed signals instead.
     """
+    # Validate that both inputs share the same regularly sampled time axis.
     if time_dim not in X1_in.dims or time_dim not in X2_in.dims:
         raise ValueError(f'Time dimension {time_dim!r} is not present')
     if X1_in.dims[-1] != time_dim or X2_in.dims[-1] != time_dim:
@@ -318,6 +323,7 @@ def calc_xr_crosscorr(
     X2_work = X2_in.assign_coords({time_dim: X1_in.coords[time_dim]})
 
     source_attrs = copy.deepcopy(X1_in.attrs)
+    # Apply the 1D correlogram kernel pairwise across the broadcast dimensions.
     Y = xr.apply_ufunc(
         _calc_crosscorr_1d,
         X1_in,
@@ -337,6 +343,7 @@ def calc_xr_crosscorr(
     )
     Y = Y.assign_coords({'lag': ('lag', lag_values)})
 
+    # Store enough metadata to reconstruct how the lag axis was built.
     lag_window_attr = None
     if lag_window is not None:
         lag_window_attr = np.asarray(lag_window, dtype=float).tolist()
