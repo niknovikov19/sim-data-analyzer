@@ -11,3 +11,5 @@ dev_scratch/data_proc/**/*.nc
 dev_scratch/data_proc/**/*.npz
 .mplconfig_test/
 dev_scratch/results/**/*.png
+external/
+.mplcache/
