@@ -103,6 +103,26 @@ class TestRateCrosscorrHelpers(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'PLOT_AMP_THRESHOLD'):
             self.module._normalize_plot_amp_threshold(1.1)
 
+    def test_normalize_lli_window_accepts_short_symmetric_window_inside_lag_window(self):
+        actual = self.module._normalize_lli_window((-0.02, 0.02), (-0.5, 0.5))
+        self.assertEqual(actual, (-0.02, 0.02))
+
+    def test_normalize_lli_window_rejects_invalid_values(self):
+        with self.assertRaisesRegex(ValueError, 'LLI_WINDOW'):
+            self.module._normalize_lli_window((0.0, 0.02), (-0.5, 0.5))
+        with self.assertRaisesRegex(ValueError, 'LLI_WINDOW'):
+            self.module._normalize_lli_window((-0.03, 0.02), (-0.5, 0.5))
+        with self.assertRaisesRegex(ValueError, 'LLI_WINDOW'):
+            self.module._normalize_lli_window((-0.6, 0.6), (-0.5, 0.5))
+
+    def test_normalize_lli_area_diff_source_accepts_short_tags(self):
+        self.assertEqual(self.module._normalize_lli_area_diff_source('demean'), 'demean')
+        self.assertEqual(self.module._normalize_lli_area_diff_source('norm'), 'norm')
+
+    def test_normalize_lli_area_diff_source_rejects_invalid_values(self):
+        with self.assertRaisesRegex(ValueError, 'LLI_AREA_DIFF_SOURCE'):
+            self.module._normalize_lli_area_diff_source('raw')
+
     def test_csv_cell_applies_fixed_decimal_rounding(self):
         self.assertEqual(self.module._csv_cell(0.12345, round_digits=3), '0.123')
         self.assertEqual(self.module._csv_cell(-0.2, round_digits=3), '-0.200')
@@ -126,6 +146,10 @@ class TestRateCrosscorrHelpers(unittest.TestCase):
             self.module._get_matrix_png_names('rate_crosscorr', 0.25),
             ['matrices.png', 'matrices__thr_0p25.png'],
         )
+
+    def test_get_lli_png_name_includes_source_tag(self):
+        self.assertEqual(self.module._get_lli_png_name('demean'), 'lli_matrices__demean.png')
+        self.assertEqual(self.module._get_lli_png_name('norm'), 'lli_matrices__norm.png')
 
     def test_get_pair_png_dirname_uses_threshold_tag_when_present(self):
         self.assertEqual(self.module._get_pair_png_dirname(None), 'pair_pngs')
@@ -228,6 +252,25 @@ class TestRateCrosscorrHelpers(unittest.TestCase):
             self.assertTrue(fpath_png.exists())
             self.assertGreater(fpath_png.stat().st_size, 0)
 
+    def test_make_lli_matrix_plot_writes_png(self):
+        pop_names = ['IT2', 'PV3']
+        lli_bounded = np.array([[0.0, 0.4], [-0.4, 0.0]])
+        lli_area_diff = np.array([[0.0, -0.25], [0.25, 0.0]])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath_png = Path(tmpdir) / 'lli_matrices__norm.png'
+            self.module._make_lli_matrix_plot(
+                fpath_png,
+                pop_names,
+                lli_bounded,
+                lli_area_diff,
+                analysis_label='rate_crosscorr',
+                filter_fband=(8.0, 14.0),
+                lli_window=(-0.02, 0.02),
+                area_diff_source='norm',
+            )
+            self.assertTrue(fpath_png.exists())
+            self.assertGreater(fpath_png.stat().st_size, 0)
+
     def test_prepare_matrix_tables_for_plot_returns_weak_mask(self):
         amp_table = np.array([[1.0, 0.2], [0.2, 0.9]])
         lag_table = np.array([[0.0, 0.05], [0.05, 0.0]])
@@ -270,6 +313,105 @@ class TestRateCrosscorrHelpers(unittest.TestCase):
         diag_mask = np.array([[True, False], [False, True]])
         actual = self.module._get_amp_plot_limit(amp_plot, diag_mask, fallback=1.0)
         self.assertAlmostEqual(actual, 0.4)
+
+    def test_get_lli_plot_limit_ignores_diagonal(self):
+        lli_plot = np.array([[0.0, -0.6], [0.2, 0.0]])
+        diag_mask = np.array([[True, False], [False, True]])
+        actual = self.module._get_lli_plot_limit(lli_plot, diag_mask, fallback=1.0)
+        self.assertAlmostEqual(actual, 0.6)
+
+    def test_compute_lli_metrics_from_corr_uses_negative_lag_as_lead_mass(self):
+        corr = xr.DataArray(
+            np.array([3.0, 1.0, 0.0, 0.5, 1.0]),
+            dims=['lag'],
+            coords={'lag': np.array([-0.02, -0.01, 0.0, 0.01, 0.02])},
+        )
+        bounded, area_diff = self.module._compute_lli_metrics_from_corr(corr, (-0.02, 0.02), 1e-12)
+        self.assertGreater(bounded, 0.0)
+        self.assertGreater(area_diff, 0.0)
+
+    def test_compute_lli_metrics_from_corr_returns_nan_when_one_side_is_missing(self):
+        corr = xr.DataArray(
+            np.array([0.0, 1.0]),
+            dims=['lag'],
+            coords={'lag': np.array([0.0, 0.01])},
+        )
+        bounded, area_diff = self.module._compute_lli_metrics_from_corr(corr, (-0.02, 0.02), 1e-12)
+        self.assertTrue(np.isnan(bounded))
+        self.assertTrue(np.isnan(area_diff))
+
+    def test_compute_lli_tables_from_cache_fills_antisymmetric_values_and_zero_diagonal(self):
+        corr_ds = xr.Dataset(
+            data_vars={
+                'demeaned_corr': (
+                    ['pair', 'lag'],
+                    np.array([
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                        [3.0, 2.0, 0.0, 1.0, 0.5],
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                    ]),
+                ),
+                'normalized_corr': (
+                    ['pair', 'lag'],
+                    np.array([
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                        [2.0, 1.5, 0.0, 0.5, 0.25],
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                    ]),
+                ),
+            },
+            coords={
+                'pair': ['IT2__IT2', 'IT2__PV3', 'PV3__PV3'],
+                'lag': np.array([-0.02, -0.01, 0.0, 0.01, 0.02]),
+                'pop_i': ('pair', ['IT2', 'IT2', 'PV3']),
+                'pop_j': ('pair', ['IT2', 'PV3', 'PV3']),
+            },
+        )
+        lli_bounded, lli_area_diff = self.module._compute_lli_tables_from_cache(
+            corr_ds, ['IT2', 'PV3'], (-0.02, 0.02), 1e-12, 'demean'
+        )
+        self.assertAlmostEqual(lli_bounded[0, 0], 0.0)
+        self.assertAlmostEqual(lli_bounded[1, 1], 0.0)
+        self.assertAlmostEqual(lli_bounded[1, 0], -lli_bounded[0, 1])
+        self.assertAlmostEqual(lli_area_diff[1, 0], -lli_area_diff[0, 1])
+        self.assertGreater(lli_bounded[0, 1], 0.0)
+        self.assertGreater(lli_area_diff[0, 1], 0.0)
+
+    def test_compute_lli_tables_from_cache_uses_requested_source_for_area_diff(self):
+        corr_ds = xr.Dataset(
+            data_vars={
+                'demeaned_corr': (
+                    ['pair', 'lag'],
+                    np.array([
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                        [3.0, 2.0, 0.0, 1.0, 0.5],
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                    ]),
+                ),
+                'normalized_corr': (
+                    ['pair', 'lag'],
+                    np.array([
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                        [0.3, 0.2, 0.0, 0.1, 0.05],
+                        [1.0, 0.5, 0.0, 0.5, 1.0],
+                    ]),
+                ),
+            },
+            coords={
+                'pair': ['IT2__IT2', 'IT2__PV3', 'PV3__PV3'],
+                'lag': np.array([-0.02, -0.01, 0.0, 0.01, 0.02]),
+                'pop_i': ('pair', ['IT2', 'IT2', 'PV3']),
+                'pop_j': ('pair', ['IT2', 'PV3', 'PV3']),
+            },
+        )
+        lli_bounded_demean, lli_area_diff_demean = self.module._compute_lli_tables_from_cache(
+            corr_ds, ['IT2', 'PV3'], (-0.02, 0.02), 1e-12, 'demean'
+        )
+        lli_bounded_norm, lli_area_diff_norm = self.module._compute_lli_tables_from_cache(
+            corr_ds, ['IT2', 'PV3'], (-0.02, 0.02), 1e-12, 'norm'
+        )
+        self.assertAlmostEqual(lli_bounded_demean[0, 1], lli_bounded_norm[0, 1])
+        self.assertNotAlmostEqual(lli_area_diff_demean[0, 1], lli_area_diff_norm[0, 1])
 
     def test_get_lag_plot_limit_ignores_masked_cells_and_diagonal(self):
         lag_plot = np.array([[0.5, 0.4], [0.03, -0.01]])

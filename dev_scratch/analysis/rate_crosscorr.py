@@ -49,17 +49,25 @@ POP_NAMES = None
 T_LIMITS = (10.0, 30.0)
 RATE_DT = 1e-3
 
-LAG_WINDOW = (-0.5, 0.5)
+LAG_WINDOW = (-0.2, 0.2)
 
-FILTER_FBAND = (8, 14)
+#FILTER_FBAND = (8, 14)
+FILTER_FBAND = (40, 150)
 FILTER_ORDER = 3
 
 DO_PLOT = 0
 PLOT_AMP_THRESHOLD = 0.08
 
+DO_PLOT_MATRICES = 0
 CSV_ROUND_DIGITS = 3
-DO_PLOT_MATRICES = 1
 MATRIX_THRESHOLD = 0.5
+
+DO_PLOT_LLI_MATRICES = 1
+LLI_WINDOW = (-0.02, 0.02)
+LLI_EPS = 1e-12
+#LLI_AREA_DIFF_SOURCE = 'demean'
+LLI_AREA_DIFF_SOURCE = 'norm'
+MATRIX_TICK_FONTSIZE = 7
 
 CORRCACHE_VERSION = 'v1'
 
@@ -209,6 +217,48 @@ def _normalize_plot_amp_threshold(plot_amp_threshold):
     return plot_amp_threshold
 
 
+def _normalize_lli_window(lli_window, lag_window):
+    """Validate a short symmetric LLI window inside the plotted lag window."""
+    lli_window = np.asarray(lli_window, dtype=float)
+    if lli_window.shape != (2,):
+        raise ValueError('LLI_WINDOW should be a length-2 finite sequence')
+    if not np.all(np.isfinite(lli_window)):
+        raise ValueError('LLI_WINDOW should contain finite values')
+    if lli_window[0] >= 0 or lli_window[1] <= 0:
+        raise ValueError('LLI_WINDOW should straddle zero')
+    if not np.isclose(abs(float(lli_window[0])), abs(float(lli_window[1])), rtol=1e-9, atol=1e-12):
+        raise ValueError('LLI_WINDOW should be symmetric around zero')
+    lag_window = np.asarray(lag_window, dtype=float)
+    if (lli_window[0] < lag_window[0]) or (lli_window[1] > lag_window[1]):
+        raise ValueError('LLI_WINDOW should lie within LAG_WINDOW')
+    return tuple(float(x) for x in lli_window.tolist())
+
+
+def _normalize_lli_eps(lli_eps):
+    """Validate the small denominator guard used by the bounded LLI."""
+    lli_eps = float(lli_eps)
+    if not np.isfinite(lli_eps):
+        raise ValueError('LLI_EPS should be finite')
+    if lli_eps <= 0:
+        raise ValueError('LLI_EPS should be positive')
+    return lli_eps
+
+
+def _normalize_lli_area_diff_source(area_diff_source: str) -> str:
+    """Validate which correlogram view feeds the right-hand LLI matrix."""
+    if not isinstance(area_diff_source, str):
+        raise ValueError('LLI_AREA_DIFF_SOURCE should be a string')
+    area_diff_source = area_diff_source.strip().lower()
+    if area_diff_source not in {'demean', 'norm'}:
+        raise ValueError("LLI_AREA_DIFF_SOURCE should be either 'demean' or 'norm'")
+    return area_diff_source
+
+
+def _get_lli_area_diff_source_tag(area_diff_source: str) -> str:
+    """Return the short filename tag for the right-hand LLI matrix source."""
+    return _normalize_lli_area_diff_source(area_diff_source)
+
+
 def _round_metric_value(value: float, round_digits):
     """Optionally round one metric value before CSV export."""
     if not np.isfinite(value):
@@ -333,6 +383,43 @@ def _pair_is_self(pair_label: str, corr_ds: xr.Dataset) -> bool:
     return pop_i == pop_j
 
 
+def _integrate_lag_side(lag_vals, corr_vals, dt: float) -> float:
+    """Integrate one correlogram half with a simple regular-grid rule."""
+    lag_vals = np.asarray(lag_vals, dtype=float)
+    corr_vals = np.asarray(corr_vals, dtype=float)
+    finite = np.isfinite(lag_vals) & np.isfinite(corr_vals)
+    lag_vals = lag_vals[finite]
+    corr_vals = corr_vals[finite]
+    if lag_vals.size == 0:
+        return np.nan
+    if lag_vals.size == 1:
+        return float(dt * corr_vals[0])
+    return float(np.trapezoid(corr_vals, x=lag_vals))
+
+
+def _compute_lli_metrics_from_corr(corr, lli_window, lli_eps):
+    """Compute bounded and signed-difference lead-lag metrics from one correlogram."""
+    lli_window = _normalize_lli_window(lli_window, LAG_WINDOW)
+    lli_eps = _normalize_lli_eps(lli_eps)
+    lag_vals = np.asarray(corr.coords['lag'].values, dtype=float)
+    corr_vals = np.asarray(corr.values, dtype=float)
+    if lag_vals.size < 2:
+        return np.nan, np.nan
+    dt = float(np.median(np.diff(lag_vals)))
+
+    lead_mask = (lag_vals >= lli_window[0]) & (lag_vals < 0)
+    lag_mask = (lag_vals > 0) & (lag_vals <= lli_window[1])
+    lead_area = _integrate_lag_side(lag_vals[lead_mask], corr_vals[lead_mask], dt)
+    lag_area = _integrate_lag_side(lag_vals[lag_mask], corr_vals[lag_mask], dt)
+    if (not np.isfinite(lead_area)) or (not np.isfinite(lag_area)):
+        return np.nan, np.nan
+
+    area_diff = float(lead_area - lag_area)
+    denom = abs(lead_area) + abs(lag_area) + lli_eps
+    bounded_lli = float(area_diff / denom)
+    return bounded_lli, area_diff
+
+
 def _compute_crosscorr_cache_dataset(rates, pair_list):
     """Compute lag-resolved cross-correlation traces for all pairs."""
     pair_labels = []
@@ -449,6 +536,35 @@ def _compute_peak_tables_from_cache(corr_ds, pop_names):
     return amp_table, lag_table, peak_amp_by_pair
 
 
+def _compute_lli_tables_from_cache(corr_ds, pop_names, lli_window, lli_eps, area_diff_source):
+    """Derive bounded and signed-difference LLI tables from cached demeaned correlograms."""
+    area_diff_source = _normalize_lli_area_diff_source(area_diff_source)
+    pop_index = {pop_name: idx for idx, pop_name in enumerate(pop_names)}
+    lli_bounded = _init_metric_table(pop_names)
+    lli_area_diff = _init_metric_table(pop_names)
+
+    for pair_label in corr_ds.pair.values.tolist():
+        demeaned_corr = corr_ds['demeaned_corr'].sel(pair=pair_label)
+        area_diff_corr = corr_ds['normalized_corr'].sel(pair=pair_label) if (area_diff_source == 'norm') else demeaned_corr
+        pop_i = str(demeaned_corr.coords['pop_i'].item())
+        pop_j = str(demeaned_corr.coords['pop_j'].item())
+        idx_i = pop_index[pop_i]
+        idx_j = pop_index[pop_j]
+        if pop_i == pop_j:
+            lli_bounded[idx_i, idx_j] = 0.0
+            lli_area_diff[idx_i, idx_j] = 0.0
+            continue
+
+        bounded_val, _ = _compute_lli_metrics_from_corr(demeaned_corr, lli_window, lli_eps)
+        _, area_diff = _compute_lli_metrics_from_corr(area_diff_corr, lli_window, lli_eps)
+        lli_bounded[idx_i, idx_j] = bounded_val
+        lli_bounded[idx_j, idx_i] = -bounded_val if np.isfinite(bounded_val) else np.nan
+        lli_area_diff[idx_i, idx_j] = area_diff
+        lli_area_diff[idx_j, idx_i] = -area_diff if np.isfinite(area_diff) else np.nan
+
+    return lli_bounded, lli_area_diff
+
+
 def _get_matrix_png_name(analysis_label: str, matrix_threshold=None, masked: bool = False) -> str:
     """Construct one matrix-summary PNG filename."""
     matrix_threshold = _normalize_matrix_threshold(matrix_threshold)
@@ -466,6 +582,11 @@ def _get_matrix_png_names(analysis_label: str, matrix_threshold):
     if matrix_threshold is not None:
         names.append(_get_matrix_png_name(analysis_label, matrix_threshold, masked=True))
     return names
+
+
+def _get_lli_png_name(area_diff_source: str) -> str:
+    """Construct the LLI matrix PNG filename."""
+    return f'lli_matrices__{_get_lli_area_diff_source_tag(area_diff_source)}.png'
 
 
 def _prepare_matrix_tables_for_plot(amp_table, lag_table, matrix_threshold):
@@ -507,6 +628,13 @@ def _get_amp_plot_limit(amp_plot, diag_mask, fallback: float) -> float:
     visible_amp = np.array(amp_plot, dtype=float, copy=True)
     visible_amp[np.asarray(diag_mask, dtype=bool)] = np.nan
     return _get_symmetric_plot_limit(visible_amp, fallback=fallback)
+
+
+def _get_lli_plot_limit(lli_plot, diag_mask, fallback: float = 1.0) -> float:
+    """Get the symmetric LLI limit from visible off-diagonal values."""
+    visible_lli = np.array(lli_plot, dtype=float, copy=True)
+    visible_lli[np.asarray(diag_mask, dtype=bool)] = np.nan
+    return _get_symmetric_plot_limit(visible_lli, fallback=fallback)
 
 
 def _overlay_amp_mask(ax, weak_mask, edgecolor=(0.45, 0.45, 0.45, 0.95), hatch='///') -> None:
@@ -578,13 +706,54 @@ def _make_matrix_plot(
         ax.set_title(title)
         ax.set_xticks(np.arange(len(pop_names)))
         ax.set_yticks(np.arange(len(pop_names)))
-        ax.set_xticklabels(pop_names, rotation=45, ha='right')
-        ax.set_yticklabels(pop_names)
+        ax.set_xticklabels(pop_names, rotation=90, ha='center', fontsize=MATRIX_TICK_FONTSIZE)
+        ax.set_yticklabels(pop_names, fontsize=MATRIX_TICK_FONTSIZE)
         fig.colorbar(image, ax=ax, shrink=0.9)
 
     fig.suptitle(
         f'{analysis_label}: normalized mean-subtracted cross-correlation peaks '
         f'({_get_filter_tag(filter_fband)})'
+    )
+    fig.savefig(fpath_out, dpi=150)
+    plt.close(fig)
+
+
+def _make_lli_matrix_plot(
+        fpath_out: Path,
+        pop_names,
+        lli_bounded,
+        lli_area_diff,
+        analysis_label: str,
+        filter_fband,
+        lli_window,
+        area_diff_source,
+        ) -> None:
+    """Render bounded and signed-area-difference LLI matrices into one PNG."""
+    area_diff_source = _normalize_lli_area_diff_source(area_diff_source)
+    diag_mask = np.eye(len(pop_names), dtype=bool)
+    bounded_display = np.ma.masked_where(diag_mask, np.asarray(lli_bounded, dtype=float))
+    area_diff_display = np.ma.masked_where(diag_mask, np.asarray(lli_area_diff, dtype=float))
+    lli_abs_bounded = _get_lli_plot_limit(lli_bounded, diag_mask, fallback=1.0)
+    lli_abs_area_diff = _get_lli_plot_limit(lli_area_diff, diag_mask, fallback=1.0)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    plot_specs = [
+        ('Bounded LLI', bounded_display, lli_abs_bounded),
+        (f'Lead area - lag area ({area_diff_source})', area_diff_display, lli_abs_area_diff),
+    ]
+
+    for ax, (title, table, abs_limit) in zip(axes, plot_specs):
+        image = ax.imshow(table, aspect='auto', cmap='bwr', vmin=-abs_limit, vmax=abs_limit)
+        ax.set_title(title)
+        ax.set_xticks(np.arange(len(pop_names)))
+        ax.set_yticks(np.arange(len(pop_names)))
+        ax.set_xticklabels(pop_names, rotation=90, ha='center', fontsize=MATRIX_TICK_FONTSIZE)
+        ax.set_yticklabels(pop_names, fontsize=MATRIX_TICK_FONTSIZE)
+        fig.colorbar(image, ax=ax, shrink=0.9)
+
+    fig.suptitle(
+        f'{analysis_label}: lead-lag index matrices '
+        f'({_get_filter_tag(filter_fband)}, lli=[{lli_window[0]:g}, {lli_window[1]:g}] s, diff={area_diff_source})'
     )
     fig.savefig(fpath_out, dpi=150)
     plt.close(fig)
@@ -637,16 +806,23 @@ def _write_metadata(
         amp_csv_name: str,
         lag_csv_name: str,
         matrix_png_names,
+        lli_bounded_csv_name: str,
+        lli_area_diff_csv_name: str,
+        lli_png_name: str | None,
         pair_png_dir_name: str | None,
         plotted_pair_count: int,
         do_plot: bool,
         do_plot_matrices: bool,
+        do_plot_lli_matrices: bool,
         filter_fband,
         filter_order: int,
         requested_pop_names,
         csv_round_digits,
         matrix_threshold,
         plot_amp_threshold,
+        lli_window,
+        lli_eps,
+        lli_area_diff_source,
         ) -> None:
     """Write one Markdown metadata file for the analysis output folder."""
     # Capture the current run settings in a machine-readable block first.
@@ -658,11 +834,15 @@ def _write_metadata(
         'POP_NAMES': None if requested_pop_names is None else list(requested_pop_names),
         'DO_PLOT': bool(do_plot),
         'DO_PLOT_MATRICES': bool(do_plot_matrices),
+        'DO_PLOT_LLI_MATRICES': bool(do_plot_lli_matrices),
         'FILTER_FBAND': None if filter_fband is None else list(map(float, filter_fband)),
         'FILTER_ORDER': int(filter_order),
         'CSV_ROUND_DIGITS': _normalize_round_digits(csv_round_digits),
         'MATRIX_THRESHOLD': _normalize_matrix_threshold(matrix_threshold),
         'PLOT_AMP_THRESHOLD': _normalize_plot_amp_threshold(plot_amp_threshold),
+        'LLI_WINDOW': list(_normalize_lli_window(lli_window, LAG_WINDOW)),
+        'LLI_EPS': _normalize_lli_eps(lli_eps),
+        'LLI_AREA_DIFF_SOURCE': _normalize_lli_area_diff_source(lli_area_diff_source),
         'pair_enumeration': 'self pairs plus unordered cross-pop pairs in filtered pop order',
         'correlation_views': [
             'raw_over_N',
@@ -673,6 +853,10 @@ def _write_metadata(
             'largest-absolute normalized mean-subtracted cross-correlation peak '
             '(amplitude and lag)'
         ),
+        'lli_metrics': [
+            'bounded_diff_over_abs_sum_from_demeaned_corr',
+            'signed_lead_minus_lag_area_from_demeaned_corr',
+        ],
     }
 
     # Then summarize the concrete artifacts and thresholds for quick inspection.
@@ -703,6 +887,12 @@ def _write_metadata(
         '- PNG naming convention: `<pop_i>__<pop_j>.png`',
         f'- Peak-amplitude CSV: `{amp_csv_name}`',
         f'- Peak-lag CSV: `{lag_csv_name}`',
+        f'- LLI bounded CSV: `{lli_bounded_csv_name}`',
+        f'- LLI area-diff CSV: `{lli_area_diff_csv_name}`',
+        (
+            f'- LLI matrix PNG: `{lli_png_name}`'
+            if lli_png_name is not None else '- LLI matrix PNG: not generated'
+        ),
         (
             f'- Pair-PNG subfolder: `{pair_png_dir_name}`'
             if pair_png_dir_name is not None else '- Pair-PNG subfolder: not generated'
@@ -712,7 +902,14 @@ def _write_metadata(
             + ', '.join(f'`{name}`' for name in matrix_png_names)
             if matrix_png_names else '- Matrix-summary PNGs: not generated'
         ),
-        '- CSV metrics come from the normalized, mean-subtracted cross-correlation peak',
+        '- CSV peak metrics come from the normalized, mean-subtracted cross-correlation peak',
+        '- Positive LLI means the row population leads the column population',
+        '- LLI bounded = `(A_lead - A_lag) / (|A_lead| + |A_lag| + eps)` from demeaned `/N` correlograms',
+        (
+            '- LLI area diff = `A_lead - A_lag` from '
+            f'`{_normalize_lli_area_diff_source(lli_area_diff_source)}` correlograms'
+        ),
+        '- LLI is derived from cached correlograms using only the short `LLI_WINDOW`, not the full `LAG_WINDOW`',
         '',
         '## Populations',
         '',
@@ -721,6 +918,7 @@ def _write_metadata(
         f'- Plotting enabled: {bool(do_plot)}',
         f'- Number of pair PNGs written: {plotted_pair_count}',
         f'- Matrix plotting enabled: {bool(do_plot_matrices)}',
+        f'- LLI matrix plotting enabled: {bool(do_plot_lli_matrices)}',
         (
             f'- Matrix threshold: {_normalize_matrix_threshold(matrix_threshold)} '
             '(masked view uses amplitude hatching and white lag cells for smaller |amplitude| values)'
@@ -729,6 +927,10 @@ def _write_metadata(
             f'- Pair plot threshold: {_normalize_plot_amp_threshold(plot_amp_threshold)} '
             '(pair PNGs use normalized, mean-subtracted peak amplitude gating)'
         ),
+        (
+            f'- LLI window: {_normalize_lli_window(lli_window, LAG_WINDOW)} '
+            '(bounded asymmetry over negative vs positive lags)'
+        ),
     ]
     fpath_md.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
@@ -736,9 +938,13 @@ def _write_metadata(
 def main() -> None:
     """Run the pairwise population rate cross-correlation workflow."""
     dirpath_out = _get_output_dir(DIRPATH_RESULTS_ROOT, EXP_LABEL, ANALYSIS_LABEL, FILTER_FBAND)
+    lli_source_tag = _get_lli_area_diff_source_tag(LLI_AREA_DIFF_SOURCE)
     amp_csv_name = f'{ANALYSIS_LABEL}__amp.csv'
     lag_csv_name = f'{ANALYSIS_LABEL}__lag.csv'
+    lli_bounded_csv_name = f'{ANALYSIS_LABEL}__lli_bounded__{lli_source_tag}.csv'
+    lli_area_diff_csv_name = f'{ANALYSIS_LABEL}__lli_area_diff__{lli_source_tag}.csv'
     matrix_png_names = _get_matrix_png_names(ANALYSIS_LABEL, MATRIX_THRESHOLD)
+    lli_png_name = _get_lli_png_name(LLI_AREA_DIFF_SOURCE)
 
     sim_result = None
     rate_cache = get_rates_cache_path(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT, RATE_DT)
@@ -771,6 +977,9 @@ def main() -> None:
     # Build or reload the expensive lag-resolved correlograms before plotting.
     corr_ds = _load_or_compute_crosscorr_cache(rates, pair_list, crosscorr_cache_path)
     amp_table, lag_table, peak_amp_by_pair = _compute_peak_tables_from_cache(corr_ds, pop_names)
+    lli_bounded_table, lli_area_diff_table = _compute_lli_tables_from_cache(
+        corr_ds, pop_names, LLI_WINDOW, LLI_EPS, LLI_AREA_DIFF_SOURCE
+    )
     plotted_pair_count = 0
     pair_png_dir_name = None
 
@@ -810,6 +1019,18 @@ def main() -> None:
         lag_table,
         round_digits=CSV_ROUND_DIGITS,
     )
+    _write_metric_csv(
+        dirpath_out / lli_bounded_csv_name,
+        pop_names,
+        lli_bounded_table,
+        round_digits=CSV_ROUND_DIGITS,
+    )
+    _write_metric_csv(
+        dirpath_out / lli_area_diff_csv_name,
+        pop_names,
+        lli_area_diff_table,
+        round_digits=CSV_ROUND_DIGITS,
+    )
     if DO_PLOT_MATRICES:
         # Export the plain matrix view and, when requested, the thresholded one.
         _make_matrix_plot(
@@ -833,6 +1054,17 @@ def main() -> None:
                 MATRIX_THRESHOLD,
                 use_mask=True,
             )
+    if DO_PLOT_LLI_MATRICES:
+        _make_lli_matrix_plot(
+            dirpath_out / lli_png_name,
+            pop_names,
+            lli_bounded_table,
+            lli_area_diff_table,
+            ANALYSIS_LABEL,
+            FILTER_FBAND,
+            LLI_WINDOW,
+            LLI_AREA_DIFF_SOURCE,
+        )
     # Finish with a README that points at the exact cache and result artifacts.
     _write_metadata(
         dirpath_out / 'README.md',
@@ -845,16 +1077,23 @@ def main() -> None:
         amp_csv_name,
         lag_csv_name,
         matrix_png_names if DO_PLOT_MATRICES else [],
+        lli_bounded_csv_name,
+        lli_area_diff_csv_name,
+        lli_png_name if DO_PLOT_LLI_MATRICES else None,
         pair_png_dir_name,
         plotted_pair_count,
         do_plot=DO_PLOT,
         do_plot_matrices=DO_PLOT_MATRICES,
+        do_plot_lli_matrices=DO_PLOT_LLI_MATRICES,
         filter_fband=FILTER_FBAND,
         filter_order=FILTER_ORDER,
         requested_pop_names=POP_NAMES,
         csv_round_digits=CSV_ROUND_DIGITS,
         matrix_threshold=MATRIX_THRESHOLD,
         plot_amp_threshold=PLOT_AMP_THRESHOLD,
+        lli_window=LLI_WINDOW,
+        lli_eps=LLI_EPS,
+        lli_area_diff_source=LLI_AREA_DIFF_SOURCE,
     )
     print(f'Saved results: {dirpath_out}')
 
