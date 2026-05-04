@@ -1,0 +1,35 @@
+{
+  "band_overrides": {
+    "alpha": [
+      7.0,
+      15.0
+    ]
+  },
+  "detection_params": {
+    "endfctr": 0.5,
+    "medthresh": 4.0,
+    "overlapth": 0.5,
+    "threshfctr": 2.0,
+    "use_dyn_thresh": false
+  },
+  "event_filters": {
+    "max_foct": 1.5,
+    "min_filtsigcor": 0.0,
+    "min_ncycle": 3.0
+  },
+  "preprocessing": {
+    "outlier_rel_neighbor_thresh": 5.0,
+    "outlier_z_thresh": 8.0
+  },
+  "spectrogram_params": {
+    "freqmax": 40.0,
+    "freqmin": 0.25,
+    "freqstep": 0.25,
+    "getphase": true,
+    "mspecwidth": 7.0,
+    "noiseamp": 20.0,
+    "normop_name": "mednorm",
+    "useloglfreq": false,
+    "winsz_s": 10.0
+  }
+}
