@@ -13,3 +13,4 @@ dev_scratch/data_proc/**/*.npz
 dev_scratch/results/**/*.png
 external/
 .mplcache/
+dev_scratch/data_proc/a1_lfp_30s_0/*_cache/

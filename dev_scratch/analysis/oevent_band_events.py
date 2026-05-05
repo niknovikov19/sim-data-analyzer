@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import gc
 import hashlib
 import io
 import json
@@ -29,12 +30,11 @@ from sim_data_analyzer.oevent_utils import (
     OEventAnalyzer,
     OEventDetectionParams,
     OEventSpectrogramParams,
-    build_band_event_result_dataset,
     event_table_from_dataset,
+    is_scalar_event_value,
     normalize_band_event_table,
     prepare_csv_event_table,
     resolve_xr_channel_selection,
-    stack_bundle_spectrograms,
 )
 from sim_data_analyzer.scratch_data import (
     get_exp_label,
@@ -68,19 +68,26 @@ OEVENT_CFG_KEYS = {
 }
 
 SIGNAL_KIND = 'csd'
-T_LIMITS = (20.0, 30.0)
+T_LIMITS = (5, 30)
 
 CHANNEL_MODE = 'multi'
-Y_RANGE = (500.0, 1000.0)
+Y_RANGE = (0, 3000)
 Y_VALUES = None
 Y, Y_STEP = None, None
 
 BANDS_OF_INTEREST = ['alpha']
 CSV_ROUND_DIGITS = 3
 
+MAKE_PER_CHANNEL_OVERVIEW_PLOTS = 0
+MAKE_SPECTROGRAM_PLOTS = 0
+MAKE_STACKED_PLOT = 0
+
 PLOT_XLIM = None
-PLOT_FILTER_FBAND = None
+PLOT_FILTER_FBAND = (4, 25)
 PLOT_FILTER_ORDER = 3
+STACK_PLOT_T_RANGE = (10, 20)
+STACK_PLOT_Y_RANGE = (2200, 2800)
+STACK_TRACE_AMP_SCALE = 0.3
 SPECT_EVENT_COLOR = 'red'
 
 SPECTROGRAM_CACHE_VERSION = 'v1'
@@ -233,6 +240,24 @@ def _get_run_tag(signal_kind: str, bands_of_interest) -> str:
     return '__'.join(parts)
 
 
+def _get_plot_suffix() -> str:
+    """Construct the PNG suffix for plot-only visualization settings."""
+    parts = []
+    if PLOT_FILTER_FBAND is not None:
+        parts.append(f'filt_{_format_window_tag(PLOT_FILTER_FBAND)}')
+    return '' if not parts else '__' + '__'.join(parts)
+
+
+def _get_stacked_plot_suffix() -> str:
+    """Construct the stacked-plot suffix for view-only settings."""
+    parts = []
+    if STACK_PLOT_T_RANGE is not None:
+        parts.append(f'tvis_{_format_window_tag(STACK_PLOT_T_RANGE)}')
+    if STACK_PLOT_Y_RANGE is not None:
+        parts.append(f'yvis_{_format_window_tag(STACK_PLOT_Y_RANGE)}')
+    return '' if not parts else '__' + '__'.join(parts)
+
+
 def _get_output_dir(results_root: Path, src_exp_group: str, signal_kind: str, bands_of_interest) -> Path:
     """Construct the grouped results directory for this analysis."""
     return results_root / src_exp_group / RESULT_GROUP / _get_run_tag(signal_kind, bands_of_interest)
@@ -251,6 +276,11 @@ def _get_spectrogram_cache_dir(dirpath_proc: Path) -> Path:
 def _get_result_cache_dir(dirpath_proc: Path) -> Path:
     """Construct the grouped lightweight-result cache directory."""
     return _get_oevent_cache_root(dirpath_proc) / 'result'
+
+
+def _get_mask_dir(dirpath_proc: Path) -> Path:
+    """Construct the exported burst-mask directory."""
+    return Path(dirpath_proc) / 'oevent_mask'
 
 
 def _get_preprocessing_tag(signal_kind: str) -> str:
@@ -302,7 +332,7 @@ def _get_result_cache_path(
         signal_kind: str,
         channel_y,
         ) -> Path:
-    """Construct the lightweight final-result cache path."""
+    """Construct the lightweight manifest path for one run."""
     payload = {
         'preproc_tag': _get_preprocessing_tag(signal_kind),
         'result_filter_tag': _get_result_filter_tag(),
@@ -313,10 +343,41 @@ def _get_result_cache_path(
         'version': RESULT_CACHE_VERSION,
     }
     fname = (
-        f'result__{_get_run_tag(signal_kind, BANDS_OF_INTEREST)}'
+        f'result_manifest__{_get_run_tag(signal_kind, BANDS_OF_INTEREST)}'
         f'__{_get_preprocessing_tag(signal_kind)}'
         f'{_get_result_filter_tag()}'
         f'__chs_{_get_channel_selection_tag(channel_y)}'
+        f'__d_{_json_digest(payload)}'
+        f'__{RESULT_CACHE_VERSION}.json'
+    )
+    return _get_result_cache_dir(dirpath_proc) / fname
+
+
+def _get_mask_path(dirpath_proc: Path, signal_kind: str, bands_of_interest) -> Path:
+    """Construct the exported in-burst mask path."""
+    return _get_mask_dir(dirpath_proc) / f'{_get_run_tag(signal_kind, bands_of_interest)}.nc'
+
+
+def _get_channel_result_cache_path(
+        dirpath_proc: Path,
+        signal_kind: str,
+        resolved_y: float,
+        ) -> Path:
+    """Construct the lightweight per-channel result cache path."""
+    payload = {
+        'preproc_tag': _get_preprocessing_tag(signal_kind),
+        'result_filter_tag': _get_result_filter_tag(),
+        'cfg_name': OEVENT_CFG_NAME,
+        'cfg_raw': CFG_RAW,
+        'exp_label': EXP_LABEL,
+        'resolved_y': float(resolved_y),
+        'version': RESULT_CACHE_VERSION,
+    }
+    fname = (
+        f'result_channel__{_get_run_tag(signal_kind, BANDS_OF_INTEREST)}'
+        f'__{_get_preprocessing_tag(signal_kind)}'
+        f'{_get_result_filter_tag()}'
+        f'__y_{_format_tag_value(resolved_y)}'
         f'__d_{_json_digest(payload)}'
         f'__{RESULT_CACHE_VERSION}.nc'
     )
@@ -356,6 +417,70 @@ def _build_plot_signal(signal: np.ndarray, sampr: float) -> np.ndarray:
         order=int(PLOT_FILTER_ORDER),
         btype='bandpass',
     )
+
+
+def _encode_dataset_attr(value):
+    """Convert one dataset attr value into a NetCDF-friendly scalar."""
+    if value is None:
+        return 'null'
+    if isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+def _build_channel_result_dataset(
+        signal_proc: np.ndarray,
+        spectrogram_norm: np.ndarray,
+        time_s: np.ndarray,
+        spec_time_s: np.ndarray,
+        freq_hz: np.ndarray,
+        event_table: pd.DataFrame,
+        resolved_y: float,
+        channel_index: int,
+        attrs: dict,
+        ) -> xr.Dataset:
+    """Pack one channel trace, spectrogram, and event table into a lightweight dataset."""
+    signal_proc = np.asarray(signal_proc, dtype=float)
+    spectrogram_norm = np.asarray(spectrogram_norm, dtype=float)
+    time_s = np.asarray(time_s, dtype=float)
+    spec_time_s = np.asarray(spec_time_s, dtype=float)
+    freq_hz = np.asarray(freq_hz, dtype=float)
+    event_table = event_table.reset_index(drop=True).copy()
+
+    event_vars = {}
+    keep_cols = [
+        col for col in event_table.columns
+        if event_table[col].map(is_scalar_event_value).all()
+    ]
+    for col in keep_cols:
+        values = event_table[col].to_numpy()
+        if pd.api.types.is_bool_dtype(event_table[col]):
+            arr = np.asarray(values, dtype=bool)
+        elif pd.api.types.is_numeric_dtype(event_table[col]):
+            arr = np.asarray(values)
+        else:
+            arr = np.asarray(['' if pd.isna(value) else str(value) for value in values], dtype=str)
+        event_vars[col] = ('event', arr)
+
+    dataset = xr.Dataset(
+        data_vars={
+            'signal_proc': ('time', signal_proc),
+            'spectrogram_norm': (['freq', 'spec_time'], spectrogram_norm),
+            **event_vars,
+        },
+        coords={
+            'time': time_s,
+            'freq': freq_hz,
+            'spec_time': spec_time_s,
+            'event': np.arange(len(event_table), dtype=int),
+        },
+        attrs={
+            **{key: _encode_dataset_attr(value) for key, value in attrs.items()},
+            'channel_y': float(resolved_y),
+            'channel_index': int(channel_index),
+        },
+    )
+    return dataset
 
 
 def _make_spectrogram_params(sampr: float) -> OEventSpectrogramParams:
@@ -504,64 +629,57 @@ def _load_or_compute_spectrogram_bundle(
     return bundle, cache_path, False
 
 
-def _compute_result_dataset(
-        raw_selected: xr.DataArray,
-        proc_selected: xr.DataArray,
+def _load_or_compute_channel_result_cache(
+        signal: np.ndarray,
         time_s: np.ndarray,
         sampr: float,
         signal_kind: str,
+        resolved_y: float,
+        channel_index: int,
         bands_of_interest,
         analyzer: OEventAnalyzer,
         detection_params: OEventDetectionParams,
-        ) -> tuple[xr.Dataset, list[bool], list[Path]]:
-    """Compute the lightweight result dataset from the selected channels."""
-    # Process each channel independently through OEvent and collect event tables.
-    bundles = []
-    bundle_hits = []
-    bundle_paths = []
-    raw_event_tables = []
-    for channel_index in range(raw_selected.sizes['channel']):
-        resolved_y = float(raw_selected.coords['channel_y'].values[channel_index])
-        signal = np.asarray(proc_selected.isel(channel=channel_index).values, dtype=float)
-        bundle, bundle_path, bundle_hit = _load_or_compute_spectrogram_bundle(
-            signal,
-            analyzer=analyzer,
-            signal_kind=signal_kind,
-            resolved_y=resolved_y,
-        )
-        bundles.append(bundle)
-        bundle_hits.append(bundle_hit)
-        bundle_paths.append(bundle_path)
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore')
-            with _oevent_stdout_context():
-                dout = analyzer.detect_from_bundle(bundle, signal, detection_params=detection_params, MUA=None)
-                events = analyzer.to_dataframe(dout, signal, MUA=None, haveMUA=False).copy()
-        selected_events, _passed_events = normalize_band_event_table(
-            events,
-            bands_of_interest=bands_of_interest,
-            sampr=sampr,
-            time_offset_s=float(time_s[0]),
-            resolved_y=resolved_y,
-            channel_index=channel_index,
-            min_ncycle=MIN_NCYCLE,
-            max_foct=MAX_FOCT,
-            min_filtsigcor=MIN_FILTSIGCOR,
-        )
-        raw_event_tables.append(selected_events)
-
-    # Pack the resolved traces, spectrograms, and scalar event fields into one dataset.
-    event_table = pd.concat(raw_event_tables, ignore_index=True) if raw_event_tables else pd.DataFrame()
-    spectrogram_norm, freq_hz, spec_time_s = stack_bundle_spectrograms(
-        bundles,
-        time_offset_s=float(time_s[0]),
+        ) -> tuple[Path, bool, bool | None, Path | None]:
+    """Load or compute one lightweight per-channel result cache."""
+    # Save each channel result independently so bulky data can be released immediately.
+    cache_path = _get_channel_result_cache_path(
+        DIRPATH_PROC,
+        signal_kind=signal_kind,
+        resolved_y=resolved_y,
     )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        print(f'Loading band-event channel cache: {cache_path}')
+        return cache_path, True, None, None
+
+    bundle, bundle_path, bundle_hit = _load_or_compute_spectrogram_bundle(
+        signal,
+        analyzer=analyzer,
+        signal_kind=signal_kind,
+        resolved_y=resolved_y,
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore')
+        with _oevent_stdout_context():
+            dout = analyzer.detect_from_bundle(bundle, signal, detection_params=detection_params, MUA=None)
+            events = analyzer.to_dataframe(dout, signal, MUA=None, haveMUA=False).copy()
+    selected_events, _passed_events = normalize_band_event_table(
+        events,
+        bands_of_interest=bands_of_interest,
+        sampr=sampr,
+        time_offset_s=float(time_s[0]),
+        resolved_y=resolved_y,
+        channel_index=channel_index,
+        min_ncycle=MIN_NCYCLE,
+        max_foct=MAX_FOCT,
+        min_filtsigcor=MIN_FILTSIGCOR,
+    )
+
     attrs = {
         'cfg_name': OEVENT_CFG_NAME,
         'exp_label': EXP_LABEL,
         'signal_kind': signal_kind,
-        'channel_mode': CHANNEL_MODE,
         'bands_of_interest': list(bands_of_interest),
         'band_overrides': {key: list(value) for key, value in BAND_OVERRIDES.items()},
         'time_limits': list(T_LIMITS),
@@ -576,21 +694,47 @@ def _compute_result_dataset(
         'source_sim_result': str(FPATH_SIM_RESULT.resolve()),
         'source_lfp_cache': str(get_lfp_cache_path(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT).resolve()),
     }
-    dataset = build_band_event_result_dataset(
-        signal_raw=np.asarray(raw_selected.values, dtype=float),
-        signal_proc=np.asarray(proc_selected.values, dtype=float),
-        spectrogram_norm=spectrogram_norm,
+    dataset = _build_channel_result_dataset(
+        signal_proc=signal,
+        spectrogram_norm=bundle.stacked_tfr(normalized=True),
         time_s=time_s,
-        spec_time_s=spec_time_s,
-        freq_hz=freq_hz,
-        channel_y=np.asarray(raw_selected.coords['channel_y'].values, dtype=float),
-        event_table=event_table,
+        spec_time_s=bundle.time_axis_s(time_offset_s=float(time_s[0])),
+        freq_hz=bundle.freq_axis_hz(),
+        event_table=selected_events,
+        resolved_y=resolved_y,
+        channel_index=channel_index,
         attrs=attrs,
     )
-    return dataset, bundle_hits, bundle_paths
+    save_xr(dataset, cache_path)
+    del dataset, bundle, events, selected_events, dout
+    gc.collect()
+    print(f'Saved band-event channel cache: {cache_path}')
+    return cache_path, False, bundle_hit, bundle_path
 
 
-def _load_or_compute_result_dataset(
+def _write_result_manifest(
+        cache_path: Path,
+        signal_kind: str,
+        channel_y,
+        channel_cache_paths,
+        ) -> None:
+    """Write one small manifest for the current channel-cache set."""
+    manifest = {
+        'cfg_name': OEVENT_CFG_NAME,
+        'exp_label': EXP_LABEL,
+        'signal_kind': signal_kind,
+        'bands_of_interest': list(BANDS_OF_INTEREST),
+        'channel_y': [float(value) for value in np.asarray(channel_y, dtype=float).tolist()],
+        'channel_cache_paths': [str(Path(path).resolve()) for path in channel_cache_paths],
+        'preproc_tag': _get_preprocessing_tag(signal_kind),
+        'result_filter_tag': _get_result_filter_tag(),
+        'result_cache_version': RESULT_CACHE_VERSION,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+
+def _ensure_channel_result_caches(
         raw_selected: xr.DataArray,
         proc_selected: xr.DataArray,
         time_s: np.ndarray,
@@ -599,35 +743,56 @@ def _load_or_compute_result_dataset(
         bands_of_interest,
         spectrogram_params: OEventSpectrogramParams,
         detection_params: OEventDetectionParams,
-        ) -> tuple[xr.Dataset, Path, bool, list[bool], list[Path]]:
-    """Load or compute the lightweight final result cache."""
-    # Cache the post-OEvent analysis output so plots can be rebuilt cheaply.
+        ) -> tuple[Path, bool, list[Path], list[bool], list[bool], list[Path]]:
+    """Ensure that lightweight per-channel result caches exist for the run."""
+    # Process one channel at a time so spectrograms never accumulate in RAM.
     channel_y = np.asarray(raw_selected.coords['channel_y'].values, dtype=float)
-    cache_path = _get_result_cache_path(
+    manifest_path = _get_result_cache_path(
         DIRPATH_PROC,
         signal_kind=signal_kind,
         channel_y=channel_y,
     )
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    if cache_path.exists():
-        print(f'Loading band-event result cache: {cache_path}')
-        return load_xr(cache_path, data_type='dataset', load=True), cache_path, True, [], []
-
-    print(f'Computing band-event result cache: {cache_path}')
     analyzer = OEventAnalyzer(spectrogram_params)
-    dataset, bundle_hits, bundle_paths = _compute_result_dataset(
-        raw_selected,
-        proc_selected,
-        time_s=time_s,
-        sampr=sampr,
+    channel_cache_paths = []
+    channel_cache_hits = []
+    spectrogram_cache_hits = []
+    spectrogram_cache_paths = []
+    for channel_index in range(raw_selected.sizes['channel']):
+        resolved_y = float(channel_y[channel_index])
+        signal = np.asarray(proc_selected.isel(channel=channel_index).values, dtype=float)
+        channel_cache_path, channel_cache_hit, spectrogram_cache_hit, spectrogram_cache_path = (
+            _load_or_compute_channel_result_cache(
+                signal,
+                time_s=time_s,
+                sampr=sampr,
+                signal_kind=signal_kind,
+                resolved_y=resolved_y,
+                channel_index=channel_index,
+                bands_of_interest=bands_of_interest,
+                analyzer=analyzer,
+                detection_params=detection_params,
+            )
+        )
+        channel_cache_paths.append(channel_cache_path)
+        channel_cache_hits.append(channel_cache_hit)
+        if spectrogram_cache_hit is not None and spectrogram_cache_path is not None:
+            spectrogram_cache_hits.append(bool(spectrogram_cache_hit))
+            spectrogram_cache_paths.append(spectrogram_cache_path)
+    manifest_hit = manifest_path.exists() and all(Path(path).exists() for path in channel_cache_paths)
+    _write_result_manifest(
+        manifest_path,
         signal_kind=signal_kind,
-        bands_of_interest=bands_of_interest,
-        analyzer=analyzer,
-        detection_params=detection_params,
+        channel_y=channel_y,
+        channel_cache_paths=channel_cache_paths,
     )
-    save_xr(dataset, cache_path)
-    print(f'Saved band-event result cache: {cache_path}')
-    return dataset, cache_path, False, bundle_hits, bundle_paths
+    return (
+        manifest_path,
+        bool(manifest_hit) and all(channel_cache_hits),
+        channel_cache_paths,
+        channel_cache_hits,
+        spectrogram_cache_hits,
+        spectrogram_cache_paths,
+    )
 
 
 def _get_band_colors(bands_of_interest) -> dict[str, tuple[float, float, float, float]]:
@@ -705,6 +870,90 @@ def _make_overview_plot(
     ax_feat.set_xlabel('time (s)')
     if xlim is not None:
         ax_feat.set_xlim(xlim)
+    fig.tight_layout()
+    fig.savefig(fpath_out, dpi=150)
+    plt.close(fig)
+
+
+def _scale_stack_traces(signal_plot, channel_y, trace_amp_scale: float) -> np.ndarray:
+    """Scale one channel x time matrix into y-positioned stacked traces."""
+    signal_plot = np.asarray(signal_plot, dtype=float)
+    channel_y = np.asarray(channel_y, dtype=float)
+    if signal_plot.ndim != 2:
+        raise ValueError('signal_plot should have shape (channel, time)')
+    if signal_plot.shape[0] != channel_y.size:
+        raise ValueError('signal_plot and channel_y should share the same channel axis')
+    if channel_y.size == 1:
+        channel_spacing = 1.0
+    else:
+        channel_spacing = float(np.median(np.diff(np.sort(channel_y))))
+    amp_ref = float(np.nanpercentile(np.abs(signal_plot), 95))
+    if not np.isfinite(amp_ref) or amp_ref <= 0:
+        amp_ref = 1.0
+    trace_scale = float(trace_amp_scale) * channel_spacing / amp_ref
+    return signal_plot * trace_scale + channel_y[:, None]
+
+
+def _make_all_channels_plot(
+        fpath_out: Path,
+        time_s: np.ndarray,
+        signal_plot: np.ndarray,
+        channel_y,
+        passed_events: pd.DataFrame,
+        signal_kind: str,
+        bands_of_interest,
+        trace_amp_scale: float,
+        t_range=None,
+        y_range=None,
+        xlim=None,
+        ) -> None:
+    """Render one stacked multi-channel trace plot with highlighted bursts."""
+    # Stack the filtered traces on the physical y axis and highlight passed bursts.
+    signal_plot = np.asarray(signal_plot, dtype=float)
+    channel_y = np.asarray(channel_y, dtype=float)
+    time_s = np.asarray(time_s, dtype=float)
+    channel_mask = np.ones(channel_y.size, dtype=bool)
+    time_mask = np.ones(time_s.size, dtype=bool)
+    if y_range is not None:
+        y0, y1 = [float(value) for value in y_range]
+        if y1 < y0:
+            y0, y1 = y1, y0
+        channel_mask = (channel_y >= y0) & (channel_y <= y1)
+    if t_range is not None:
+        t0, t1 = [float(value) for value in t_range]
+        if t1 < t0:
+            t0, t1 = t1, t0
+        time_mask = (time_s >= t0) & (time_s <= t1)
+    if not np.any(channel_mask):
+        raise ValueError('STACK_PLOT_Y_RANGE selected no channels')
+    if not np.any(time_mask):
+        raise ValueError('STACK_PLOT_T_RANGE selected no time points')
+    channel_y_sel = channel_y[channel_mask]
+    time_s_sel = time_s[time_mask]
+    signal_plot_sel = signal_plot[channel_mask][:, time_mask]
+    stacked = _scale_stack_traces(signal_plot_sel, channel_y_sel, trace_amp_scale=trace_amp_scale)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    selected_indices = np.flatnonzero(channel_mask)
+    for local_index, channel_index in enumerate(selected_indices):
+        y_value = float(channel_y[channel_index])
+        ax.plot(time_s_sel, stacked[local_index], color='#1f6feb', lw=0.9, alpha=0.95)
+        channel_events = passed_events.loc[passed_events['event_channel'] == int(channel_index)]
+        for event in channel_events.itertuples(index=False):
+            mask = (time_s_sel >= float(event.start_time_s)) & (time_s_sel <= float(event.stop_time_s))
+            if not np.any(mask):
+                continue
+            ax.plot(time_s_sel[mask], stacked[local_index, mask], color=SPECT_EVENT_COLOR, lw=2.0, alpha=0.95)
+
+    ax.set_xlabel('time (s)')
+    ax.set_ylabel('y (um)')
+    ax.set_title(
+        f'Stacked {signal_kind.upper()} traces with passed band events, '
+        f'bands={",".join(bands_of_interest)}'
+    )
+    ax.invert_yaxis()
+    ax.grid(True, alpha=0.18)
+    if xlim is not None:
+        ax.set_xlim(xlim)
     fig.tight_layout()
     fig.savefig(fpath_out, dpi=150)
     plt.close(fig)
@@ -828,12 +1077,14 @@ def _write_metadata(
         dirpath_out: Path,
         fpath_cfg_copy: Path,
         result_cache_path: Path,
+        fpath_mask: Path,
         spectrogram_cache_paths,
         channel_y,
         bands_of_interest,
         signal_kind: str,
         result_cache_hit: bool,
         spectrogram_cache_hits,
+        channel_cache_hits,
         ) -> None:
     """Write one short Markdown metadata file for the run."""
     params = {
@@ -851,6 +1102,12 @@ def _write_metadata(
         'CSV_ROUND_DIGITS': _normalize_round_digits(CSV_ROUND_DIGITS),
         'PLOT_FILTER_FBAND': None if PLOT_FILTER_FBAND is None else list(PLOT_FILTER_FBAND),
         'PLOT_XLIM': None if PLOT_XLIM is None else list(PLOT_XLIM),
+        'STACK_PLOT_T_RANGE': None if STACK_PLOT_T_RANGE is None else list(STACK_PLOT_T_RANGE),
+        'STACK_PLOT_Y_RANGE': None if STACK_PLOT_Y_RANGE is None else list(STACK_PLOT_Y_RANGE),
+        'MAKE_PER_CHANNEL_OVERVIEW_PLOTS': bool(MAKE_PER_CHANNEL_OVERVIEW_PLOTS),
+        'MAKE_SPECTROGRAM_PLOTS': bool(MAKE_SPECTROGRAM_PLOTS),
+        'MAKE_STACKED_PLOT': bool(MAKE_STACKED_PLOT),
+        'STACK_TRACE_AMP_SCALE': float(STACK_TRACE_AMP_SCALE),
         'SPECT_EVENT_COLOR': SPECT_EVENT_COLOR,
     }
     lines = [
@@ -866,7 +1123,8 @@ def _write_metadata(
         f'- OEvent config: `{_get_cfg_path(OEVENT_CFG_NAME).resolve()}`',
         f'- Copied config: `{fpath_cfg_copy.resolve()}`',
         f'- Intermediate/cache root: `{DIRPATH_PROC.resolve()}`',
-        f'- Lightweight result cache: `{result_cache_path.resolve()}`',
+        f'- Result-cache manifest: `{result_cache_path.resolve()}`',
+        f'- In-burst mask: `{fpath_mask.resolve()}`',
         f'- Results folder: `{dirpath_out.resolve()}`',
         '',
         '## Parameters',
@@ -882,7 +1140,8 @@ def _write_metadata(
         '',
         '## Cache Status',
         '',
-        f'- Lightweight result cache hit: {bool(result_cache_hit)}',
+        f'- Result manifest hit: {bool(result_cache_hit)}',
+        f'- Channel result cache hits: {sum(bool(x) for x in channel_cache_hits)} / {len(channel_cache_hits)}',
         (
             f'- Spectrogram cache hits: {sum(bool(x) for x in spectrogram_cache_hits)} / {len(spectrogram_cache_hits)}'
             if spectrogram_cache_hits else '- Spectrogram cache hits: reused via lightweight result cache'
@@ -926,6 +1185,7 @@ def main() -> None:
         signal_kind=signal_kind,
         channel_y=channel_y,
     )
+    fpath_mask = _get_mask_path(DIRPATH_PROC, signal_kind=signal_kind, bands_of_interest=bands_of_interest)
 
     # Create the results folder and guard it with the copied config file.
     dirpath_out.mkdir(parents=True, exist_ok=True)
@@ -935,9 +1195,15 @@ def main() -> None:
         f'with bands={bands_of_interest}, cfg={OEVENT_CFG_NAME}, exp={EXP_LABEL}'
     )
 
-    # Build or reload the lightweight result cache before producing outputs.
-    result_ds, result_cache_path, result_cache_hit, spectrogram_cache_hits, spectrogram_cache_paths = (
-        _load_or_compute_result_dataset(
+    # Build or reload the lightweight per-channel caches before producing outputs.
+    (
+        result_cache_path,
+        result_cache_hit,
+        channel_cache_paths,
+        channel_cache_hits,
+        spectrogram_cache_hits,
+        spectrogram_cache_paths,
+    ) = _ensure_channel_result_caches(
             raw_selected,
             proc_selected,
             time_s=time_s,
@@ -947,11 +1213,10 @@ def main() -> None:
             spectrogram_params=spectrogram_params,
             detection_params=detection_params,
         )
-    )
+    del raw_selected, proc_selected
+    gc.collect()
 
-    # Reconstruct the unified event tables and plotting helpers from the cached dataset.
-    event_table = event_table_from_dataset(result_ds)
-    passed_events = event_table.loc[event_table['event_passed'].astype(bool)].copy()
+    # Reconstruct event tables and plots by streaming one channel cache at a time.
     band_colors = _get_band_colors(bands_of_interest)
     resolved_bands = detection_params.resolved_bands()
 
@@ -959,50 +1224,103 @@ def main() -> None:
     dirpath_csv = dirpath_out / 'csv'
     dirpath_overview = dirpath_out / 'overview_pngs'
     dirpath_spect = dirpath_out / 'spectrogram_pngs'
-    for path in [dirpath_csv, dirpath_overview, dirpath_spect]:
+    for path in [dirpath_csv]:
         path.mkdir(parents=True, exist_ok=True)
+    if MAKE_PER_CHANNEL_OVERVIEW_PLOTS:
+        dirpath_overview.mkdir(parents=True, exist_ok=True)
+    if MAKE_SPECTROGRAM_PLOTS:
+        dirpath_spect.mkdir(parents=True, exist_ok=True)
 
+    # Stream channel caches for plots and combine only the small event tables in memory.
+    event_tables = []
+    passed_event_tables = []
+    stacked_plot_signals = []
+    burst_mask = np.zeros((len(channel_y), len(time_s)), dtype=np.uint8)
+    plot_suffix = _get_plot_suffix()
+    for channel_cache_path in channel_cache_paths:
+        channel_ds = load_xr(channel_cache_path, data_type='dataset', load=False)
+        channel_index = int(channel_ds.attrs['channel_index'])
+        resolved_y = float(channel_ds.attrs['channel_y'])
+        proc_trace = np.asarray(channel_ds['signal_proc'].values, dtype=float)
+        plot_trace = _build_plot_signal(proc_trace, sampr)
+        event_table_channel = event_table_from_dataset(channel_ds)
+        passed_channel_events = event_table_channel.loc[event_table_channel['event_passed'].astype(bool)].copy()
+        for event in passed_channel_events.itertuples(index=False):
+            mask = (time_s >= float(event.start_time_s)) & (time_s <= float(event.stop_time_s))
+            burst_mask[channel_index, mask] = 1
+        event_tables.append(event_table_channel)
+        passed_event_tables.append(passed_channel_events)
+        if MAKE_STACKED_PLOT:
+            stacked_plot_signals.append(plot_trace)
+        channel_tag = f'y_{_format_tag_value(resolved_y)}'
+
+        if MAKE_PER_CHANNEL_OVERVIEW_PLOTS:
+            _make_overview_plot(
+                dirpath_overview / f'{channel_tag}{plot_suffix}.png',
+                time_s,
+                plot_trace,
+                passed_channel_events,
+                resolved_y=resolved_y,
+                signal_kind=signal_kind,
+                band_colors=band_colors,
+                bands_of_interest=bands_of_interest,
+                xlim=PLOT_XLIM,
+            )
+        if MAKE_SPECTROGRAM_PLOTS:
+            spec_time_s = np.asarray(channel_ds.coords['spec_time'].values, dtype=float)
+            freq_hz = np.asarray(channel_ds.coords['freq'].values, dtype=float)
+            spec_trace = np.asarray(channel_ds['spectrogram_norm'].values, dtype=float)
+            _make_spectrogram_plot(
+                dirpath_spect / f'{channel_tag}{plot_suffix}.png',
+                spec_time_s,
+                freq_hz,
+                spec_trace,
+                event_table_channel,
+                passed_channel_events,
+                resolved_bands=resolved_bands,
+                band_colors=band_colors,
+                resolved_y=resolved_y,
+                signal_kind=signal_kind,
+                bands_of_interest=bands_of_interest,
+                xlim=PLOT_XLIM,
+            )
+        channel_ds.close()
+        del channel_ds
+
+    event_table = pd.concat(event_tables, ignore_index=True) if event_tables else pd.DataFrame()
+    passed_events = pd.concat(passed_event_tables, ignore_index=True) if passed_event_tables else pd.DataFrame()
     csv_table = prepare_csv_event_table(event_table, round_digits=CSV_ROUND_DIGITS)
     fpath_csv = dirpath_csv / 'events.csv'
     csv_table.to_csv(fpath_csv, index=False, quoting=csv.QUOTE_MINIMAL)
+    mask_da = xr.DataArray(
+        burst_mask,
+        dims=('y', 'time'),
+        coords={'y': channel_y, 'time': time_s},
+        name='oevent_in_burst_mask',
+        attrs={
+            'signal_kind': signal_kind,
+            'bands_of_interest': json.dumps(list(bands_of_interest)),
+            'cfg_name': OEVENT_CFG_NAME,
+            'exp_label': EXP_LABEL,
+            'value_meaning': '1=in passed burst, 0=out of burst',
+        },
+    )
+    save_xr(mask_da, fpath_mask)
 
-    # Export one overview plot and one spectrogram plot per analyzed channel.
-    spec_time_s = np.asarray(result_ds.coords['spec_time'].values, dtype=float)
-    freq_hz = np.asarray(result_ds.coords['freq'].values, dtype=float)
-    for channel_index in result_ds.coords['channel'].values.tolist():
-        channel_index = int(channel_index)
-        resolved_y = float(result_ds.coords['channel_y'].values[channel_index])
-        raw_trace = np.asarray(result_ds['signal_raw'].isel(channel=channel_index).values, dtype=float)
-        proc_trace = np.asarray(result_ds['signal_proc'].isel(channel=channel_index).values, dtype=float)
-        spec_trace = np.asarray(result_ds['spectrogram_norm'].isel(channel=channel_index).values, dtype=float)
-        plot_trace = _build_plot_signal(proc_trace, sampr)
-        raw_events = event_table.loc[event_table['event_channel'] == channel_index].copy()
-        passed_channel_events = passed_events.loc[passed_events['event_channel'] == channel_index].copy()
-        channel_tag = f'y_{_format_tag_value(resolved_y)}'
-
-        _make_overview_plot(
-            dirpath_overview / f'{channel_tag}.png',
-            time_s,
-            plot_trace,
-            passed_channel_events,
-            resolved_y=resolved_y,
-            signal_kind=signal_kind,
-            band_colors=band_colors,
-            bands_of_interest=bands_of_interest,
-            xlim=PLOT_XLIM,
-        )
-        _make_spectrogram_plot(
-            dirpath_spect / f'{channel_tag}.png',
-            spec_time_s,
-            freq_hz,
-            spec_trace,
-            raw_events,
-            passed_channel_events,
-            resolved_bands=resolved_bands,
-            band_colors=band_colors,
-            resolved_y=resolved_y,
+    # Export one stacked multi-channel plot when more than one trace is shown.
+    if MAKE_STACKED_PLOT and stacked_plot_signals:
+        stacked_suffix = plot_suffix + _get_stacked_plot_suffix()
+        _make_all_channels_plot(
+            dirpath_out / f'all_channels{stacked_suffix}.png',
+            time_s=time_s,
+            signal_plot=np.stack(stacked_plot_signals, axis=0),
+            channel_y=channel_y,
+            passed_events=passed_events,
             signal_kind=signal_kind,
             bands_of_interest=bands_of_interest,
+            trace_amp_scale=STACK_TRACE_AMP_SCALE,
+            t_range=STACK_PLOT_T_RANGE,
+            y_range=STACK_PLOT_Y_RANGE,
             xlim=PLOT_XLIM,
         )
 
@@ -1012,12 +1330,14 @@ def main() -> None:
         dirpath_out=dirpath_out,
         fpath_cfg_copy=fpath_cfg_copy,
         result_cache_path=result_cache_path,
+        fpath_mask=fpath_mask,
         spectrogram_cache_paths=spectrogram_cache_paths,
         channel_y=channel_y,
         bands_of_interest=bands_of_interest,
         signal_kind=signal_kind,
         result_cache_hit=result_cache_hit,
         spectrogram_cache_hits=spectrogram_cache_hits,
+        channel_cache_hits=channel_cache_hits,
     )
 
     # Print a compact terminal summary for the current run.
@@ -1027,7 +1347,8 @@ def main() -> None:
     print(f'Channels analyzed: {len(channel_y)} at depths {channel_y.tolist()}')
     print(f'Sampling rate: {sampr:g} Hz')
     print(f'Interpolated samples: {n_interpolated}')
-    print(f'Lightweight result cache: {"hit" if result_cache_hit else "miss"} at {result_cache_path}')
+    print(f'Result manifest: {"hit" if result_cache_hit else "miss"} at {result_cache_path}')
+    print(f'Channel result cache hits: {sum(bool(x) for x in channel_cache_hits)} / {len(channel_cache_hits)}')
     if spectrogram_cache_hits:
         print(
             f'Spectrogram cache hits: {sum(bool(x) for x in spectrogram_cache_hits)} / '
@@ -1035,9 +1356,14 @@ def main() -> None:
         )
     print(f'Selected-band events: {len(event_table)} total, {len(passed_events)} passed')
     print(f'Copied config: {fpath_cfg_copy}')
+    print(f'Saved in-burst mask: {fpath_mask}')
     print(f'Saved CSV: {fpath_csv}')
-    print(f'Saved overview PNGs to: {dirpath_overview}')
-    print(f'Saved spectrogram PNGs to: {dirpath_spect}')
+    if MAKE_STACKED_PLOT:
+        print(f'Saved stacked channels PNG: {dirpath_out / f"all_channels{plot_suffix + _get_stacked_plot_suffix()}.png"}')
+    if MAKE_PER_CHANNEL_OVERVIEW_PLOTS:
+        print(f'Saved overview PNGs to: {dirpath_overview}')
+    if MAKE_SPECTROGRAM_PLOTS:
+        print(f'Saved spectrogram PNGs to: {dirpath_spect}')
 
 
 if __name__ == '__main__':

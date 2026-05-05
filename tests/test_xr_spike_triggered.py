@@ -97,6 +97,12 @@ def _make_signal_pop_cell():
     )
 
 
+def _make_signal_absolute_time():
+    tt = np.arange(5.0, 6.0, 0.1)
+    values = np.arange(len(tt), dtype=float)
+    return xr.DataArray(values, dims=['time'], coords={'time': tt}, attrs={'source': 'test'})
+
+
 class TestXRSpikeTriggered(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -106,6 +112,7 @@ class TestXRSpikeTriggered(unittest.TestCase):
         cls.X_pop = _make_signal_pop()
         cls.X_cell = _make_signal_cell()
         cls.X_pop_cell = _make_signal_pop_cell()
+        cls.X_abs = _make_signal_absolute_time()
         cls.time_win = (-0.1, 0.2)
 
     def test_combined_avg_on_1d_signal(self):
@@ -173,6 +180,20 @@ class TestXRSpikeTriggered(unittest.TestCase):
         )
         out = calc_xr_sta(
             self.X1, spikes_ms, self.time_win,
+            pop_name='IT2', time_units='s', return_mode='avg'
+        )
+        np.testing.assert_allclose(out.values, np.array([2.5, 3.5, 4.5, 5.5]))
+
+    def test_absolute_time_spikes_with_ms_units_and_no_subtract_t0(self):
+        spikes_ms_abs = SpikeData(
+            {'IT2': [np.array([5200.0, 5500.0, 5800.0])]},
+            meta=_SpikeMeta(
+                combine=True, t0=5000.0, tmax=6000.0, subtract_t0=False, ms=True, ndigits=3
+            ),
+            pop_sizes={'IT2': 1},
+        )
+        out = calc_xr_sta(
+            self.X_abs, spikes_ms_abs, self.time_win,
             pop_name='IT2', time_units='s', return_mode='avg'
         )
         np.testing.assert_allclose(out.values, np.array([2.5, 3.5, 4.5, 5.5]))
