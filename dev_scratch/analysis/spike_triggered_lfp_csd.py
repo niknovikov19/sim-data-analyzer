@@ -27,6 +27,7 @@ from sim_data_analyzer.scratch_data import (
     load_or_extract_lfp,
     load_sim_result,
 )
+from sim_data_analyzer.netpyne_res_parse_utils import get_pop_names
 from sim_data_analyzer.spike_data import SpikeData
 from sim_data_analyzer.xr_diff import calc_xr_csd
 from sim_data_analyzer.xr_io import load_xr, save_xr
@@ -42,7 +43,12 @@ DIRPATH_RESULTS_ROOT = DIR_PACKAGE / 'dev_scratch' / 'results'
 FPATH_LAYER_CONFIG = DIR_PACKAGE / 'dev_scratch' / 'analysis' / 'configs' / 'layers' / 'default.json'
 
 RESULT_GROUP = 'sta'
-TRIGGER_POP = 'ITS4'
+
+#TRIGGER_POPS = ['ITS4', 'PV4', 'SOM4']
+#POP_GROUP_NAME = 'l4_test'
+TRIGGER_POPS = 'all'
+POP_GROUP_NAME = 'all'
+
 SIGNAL_TYPE = 'csd'
 SPIKE_T_LIMITS_S = (5.0, 30.0)
 TIME_WIN_MS = (-100.0, 100.0)
@@ -51,7 +57,8 @@ SUBTRACT_CHAN_MEAN = True
 MAKE_PLOT_1D = 0
 MAKE_PLOT_2D = 1
 PLOT_Y = None
-SHOW_ZERO_LINE = False
+SHOW_ZERO_LINE = 1
+ZERO_LINE_ALPHA = 0.3
 SHOW_LAYER_BORDERS = True
 
 FPATH_SPIKES = None
@@ -67,23 +74,73 @@ def _round_ms_tag(value_ms: float) -> int:
     return int(round(float(value_ms)))
 
 
-def _get_sta_output_dirname(trigger_pop: str, signal_type: str, time_win_ms) -> str:
+def _get_sta_output_dirname(pop_tag: str, signal_type: str, time_win_ms) -> str:
     """Build the user-facing output directory name."""
     win_start, win_stop = time_win_ms
     return (
-        f'{trigger_pop}_{signal_type}_'
+        f'{pop_tag}_{signal_type}_'
         f'{_round_ms_tag(win_start)}_{_round_ms_tag(win_stop)}'
     )
 
 
-def _get_sta_output_dir(results_root: Path, exp_label: str, trigger_pop: str, signal_type: str, time_win_ms) -> Path:
+def _resolve_all_trigger_pops(all_pop_names) -> list[str]:
+    """Return all non-frozen population names in stable order."""
+    pop_names = [str(pop_name) for pop_name in list(all_pop_names) if 'frz' not in str(pop_name)]
+    if not pop_names:
+        raise ValueError('No non-frozen populations are available for analysis')
+    return pop_names
+
+
+def _needs_all_trigger_pops(trigger_pops) -> bool:
+    """Return whether the configured trigger-pop spec requests all non-frozen populations."""
+    if isinstance(trigger_pops, str):
+        return trigger_pops.strip().lower() == 'all'
+    trigger_pops = list(trigger_pops)
+    return len(trigger_pops) == 1 and str(trigger_pops[0]).strip().lower() == 'all'
+
+
+def _resolve_trigger_pops(trigger_pops, pop_group_name: str | None = None, all_pop_names=None) -> list[str]:
+    """Validate and normalize the configured trigger-pop selection."""
+    if _needs_all_trigger_pops(trigger_pops):
+        if all_pop_names is None:
+            raise ValueError('all_pop_names is required when TRIGGER_POPS requests all populations')
+        pop_names = _resolve_all_trigger_pops(all_pop_names)
+    else:
+        pop_names = [str(pop_name) for pop_name in list(trigger_pops)]
+    if not pop_names:
+        raise ValueError('TRIGGER_POPS should contain at least one population name')
+    if any(not pop_name.strip() for pop_name in pop_names):
+        raise ValueError('TRIGGER_POPS should not contain empty population names')
+    if len(set(pop_names)) != len(pop_names):
+        raise ValueError(f'TRIGGER_POPS should not contain duplicates: {pop_names}')
+    if len(pop_names) > 1 and not str(pop_group_name or '').strip():
+        raise ValueError('POP_GROUP_NAME is required when TRIGGER_POPS contains multiple populations')
+    return pop_names
+
+
+def _get_sta_result_tag(trigger_pops, signal_type: str, time_win_ms, pop_group_name: str | None = None) -> str:
+    """Return the user-facing folder tag for single- or multi-pop runs."""
+    pop_names = _resolve_trigger_pops(trigger_pops, pop_group_name=pop_group_name)
+    pop_tag = pop_names[0] if len(pop_names) == 1 else str(pop_group_name).strip()
+    return _get_sta_output_dirname(pop_tag, signal_type, time_win_ms)
+
+
+def _get_sta_output_dir(results_root: Path, exp_label: str, trigger_pops, signal_type: str, time_win_ms, pop_group_name: str | None = None) -> Path:
     """Return the final results directory for one STA configuration."""
     return (
         Path(results_root)
         / exp_label
         / RESULT_GROUP
-        / _get_sta_output_dirname(trigger_pop, signal_type, time_win_ms)
+        / _get_sta_result_tag(trigger_pops, signal_type, time_win_ms, pop_group_name=pop_group_name)
     )
+
+
+def _get_sta_plot_dirs(dirpath_out: Path, make_plot_1d, make_plot_2d) -> tuple[Path | None, Path | None]:
+    """Return plot directories for 1D and 2D outputs when enabled."""
+    dirpath_out = Path(dirpath_out)
+    dirpath_1d = dirpath_out / '1d' if make_plot_1d else None
+    dirpath_2d = dirpath_out / '2d' if make_plot_2d else None
+    return dirpath_1d, dirpath_2d
 
 
 def _get_sta_cache_dir(
@@ -131,6 +188,60 @@ def _get_spike_cache_candidates(dirpath_proc: Path, trigger_pop: str, spike_t_li
     ]
 
 
+def _resolve_configured_spike_cache_path(
+        fpath_spikes,
+        trigger_pop: str,
+        trigger_pops,
+        pop_group_name: str | None = None,
+        ) -> Path | None:
+    """Resolve an optional configured spike cache path for one population."""
+    if fpath_spikes is None:
+        return None
+    if isinstance(fpath_spikes, dict):
+        resolved = fpath_spikes.get(trigger_pop)
+        return None if resolved is None else Path(resolved)
+    trigger_pops = _resolve_trigger_pops(trigger_pops, pop_group_name=pop_group_name)
+    if len(trigger_pops) > 1:
+        raise ValueError(
+            'FPATH_SPIKES should be None or a {pop_name: path} mapping when TRIGGER_POPS has multiple populations'
+        )
+    return Path(fpath_spikes)
+
+
+def _try_load_pop_names_from_spike_cache(fpath_spikes) -> list[str] | None:
+    """Return population names from one spike cache when it is available and readable."""
+    if fpath_spikes is None:
+        return None
+    fpath_spikes = Path(fpath_spikes)
+    if not fpath_spikes.exists():
+        return None
+    try:
+        spikes = SpikeData.load(fpath_spikes)
+    except Exception:
+        return None
+    return [str(pop_name) for pop_name in spikes.get_pop_names()]
+
+
+def _load_available_trigger_pop_names(fpath_sim_result, dirpath_proc, fpath_spikes=None) -> list[str]:
+    """Load available trigger populations, preferring spike caches over the raw sim pickle."""
+    if isinstance(fpath_spikes, dict):
+        cache_pop_names = [str(pop_name) for pop_name in fpath_spikes]
+        if cache_pop_names:
+            return _resolve_all_trigger_pops(cache_pop_names)
+    else:
+        cache_pop_names = _try_load_pop_names_from_spike_cache(fpath_spikes)
+        if cache_pop_names:
+            return _resolve_all_trigger_pops(cache_pop_names)
+
+    combined_spike_cache = Path(dirpath_proc) / 'spike_data_demo' / 'spikes_combined_ms.npz'
+    cache_pop_names = _try_load_pop_names_from_spike_cache(combined_spike_cache)
+    if cache_pop_names:
+        return _resolve_all_trigger_pops(cache_pop_names)
+
+    sim_result = load_sim_result(fpath_sim_result)
+    return _resolve_all_trigger_pops(get_pop_names(sim_result))
+
+
 def _time_win_s_from_ms(time_win_ms) -> tuple[float, float]:
     """Convert an STA window from milliseconds to seconds."""
     time_win_ms = np.asarray(time_win_ms, dtype=float)
@@ -166,6 +277,18 @@ def _make_netcdf_safe_dataarray(X: xr.DataArray) -> xr.DataArray:
         for key, value in dict(X.attrs).items()
     }
     return X_out
+
+
+def _get_symmetric_color_limits(values) -> tuple[float, float]:
+    """Return symmetric color limits around zero so zero maps to the center color."""
+    values = np.asarray(values, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return (-1.0, 1.0)
+    vmax = float(np.max(np.abs(finite)))
+    if vmax == 0.0:
+        vmax = 1.0
+    return (-vmax, vmax)
 
 
 def _get_signal_for_analysis(
@@ -452,15 +575,12 @@ def _add_layer_borders(ax, layer_spans, y_values, x_min_ms, x_max_ms) -> None:
         )
 
 
-def _save_sta_avg_cache(avg_sta: xr.DataArray, cache_dir: Path, result_dir: Path, manifest: dict) -> tuple[Path, Path, Path]:
-    """Save the average cache and manifest to their cache/results locations."""
+def _save_sta_avg_cache(avg_sta: xr.DataArray, cache_dir: Path, manifest: dict) -> tuple[Path, Path]:
+    """Save the average cache and manifest to the processing cache location."""
     cache_dir = Path(cache_dir)
-    result_dir = Path(result_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    result_dir.mkdir(parents=True, exist_ok=True)
 
     cache_nc = cache_dir / 'avg_2d.nc'
-    result_nc = result_dir / 'avg_2d.nc'
     manifest_path = cache_dir / 'manifest.json'
     tmp_nc = cache_dir / 'avg_2d.tmp.nc'
 
@@ -473,9 +593,8 @@ def _save_sta_avg_cache(avg_sta: xr.DataArray, cache_dir: Path, result_dir: Path
     finally:
         if tmp_nc.exists():
             tmp_nc.unlink()
-    shutil.copyfile(cache_nc, result_nc)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    return cache_nc, result_nc, manifest_path
+    return cache_nc, manifest_path
 
 
 def _is_valid_sta_cache(avg_sta: xr.DataArray) -> bool:
@@ -497,17 +616,14 @@ def _load_or_compute_sta_avg_cache(
         time_win_ms,
         subtract_chan_mean: bool,
         cache_dir: Path,
-        result_dir: Path,
         fpath_sim_result,
         fpath_lfp_cache,
         fpath_spikes,
-        ) -> tuple[xr.DataArray, Path, Path, Path, bool]:
+        ) -> tuple[xr.DataArray, Path, Path, bool]:
     """Load the cached all-channel STA or compute and save it."""
     cache_dir = Path(cache_dir)
-    result_dir = Path(result_dir)
     cache_nc = cache_dir / 'avg_2d.nc'
     manifest_path = cache_dir / 'manifest.json'
-    result_nc = result_dir / 'avg_2d.nc'
 
     if cache_nc.exists():
         try:
@@ -532,10 +648,7 @@ def _load_or_compute_sta_avg_cache(
                     json.dumps(manifest, indent=2, sort_keys=True) + '\n',
                     encoding='utf-8',
                 )
-            if not result_nc.exists():
-                result_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(cache_nc, result_nc)
-            return avg_sta, cache_nc, result_nc, manifest_path, True
+            return avg_sta, cache_nc, manifest_path, True
         print(f'Ignoring invalid STA cache and recomputing: {cache_nc}')
 
     avg_sta = _build_sta_avg_2d(signal, spikes, trigger_pop, _time_win_s_from_ms(time_win_ms))
@@ -562,8 +675,108 @@ def _load_or_compute_sta_avg_cache(
         fpath_lfp_cache,
         fpath_spikes,
     )
-    cache_nc, result_nc, manifest_path = _save_sta_avg_cache(avg_sta, cache_dir, result_dir, manifest)
-    return avg_sta, cache_nc, result_nc, manifest_path, False
+    cache_nc, manifest_path = _save_sta_avg_cache(avg_sta, cache_dir, manifest)
+    return avg_sta, cache_nc, manifest_path, False
+
+
+def _run_sta_for_trigger_pop(
+        signal: xr.DataArray,
+        trigger_pop: str,
+        trigger_pops,
+        pop_group_name: str | None,
+        signal_type: str,
+        spike_t_limits_s,
+        time_win_ms,
+        subtract_chan_mean: bool,
+        dirpath_proc: Path,
+        dirpath_out: Path,
+        fpath_sim_result,
+        fpath_lfp_cache,
+        fpath_spikes_config,
+        make_plot_1d,
+        make_plot_2d,
+        plot_y,
+        show_zero_line: bool,
+        layer_spans=None,
+        ) -> dict:
+    """Run cache/load/plot work for one trigger population."""
+    dirpath_cache = _get_sta_cache_dir(
+        dirpath_proc,
+        trigger_pop,
+        signal_type,
+        spike_t_limits_s,
+        time_win_ms,
+        subtract_chan_mean,
+    )
+    dirpath_1d_root, dirpath_2d_root = _get_sta_plot_dirs(dirpath_out, make_plot_1d, make_plot_2d)
+
+    spikes, fpath_spikes, spike_cache_hit = _load_or_extract_trigger_spikes(
+        fpath_sim_result,
+        dirpath_proc,
+        trigger_pop,
+        spike_t_limits_s,
+        fpath_spikes=_resolve_configured_spike_cache_path(
+            fpath_spikes_config,
+            trigger_pop,
+            trigger_pops,
+            pop_group_name=pop_group_name,
+        ),
+    )
+
+    avg_sta, cache_nc, manifest_path, sta_cache_hit = _load_or_compute_sta_avg_cache(
+        signal,
+        spikes,
+        trigger_pop,
+        signal_type,
+        spike_t_limits_s,
+        time_win_ms,
+        subtract_chan_mean,
+        dirpath_cache,
+        fpath_sim_result,
+        fpath_lfp_cache,
+        fpath_spikes,
+    )
+
+    plot_2d_path = None
+    if dirpath_2d_root is not None:
+        dirpath_2d_root.mkdir(parents=True, exist_ok=True)
+        plot_2d_path = dirpath_2d_root / f'{trigger_pop}.png'
+        _plot_sta_2d(
+            avg_sta,
+            plot_2d_path,
+            trigger_pop,
+            signal_type,
+            show_zero_line=show_zero_line,
+            zero_line_alpha=ZERO_LINE_ALPHA,
+            layer_spans=layer_spans,
+        )
+
+    dirpath_1d = None
+    if dirpath_1d_root is not None:
+        dirpath_1d = dirpath_1d_root / str(trigger_pop)
+        dirpath_1d.mkdir(parents=True, exist_ok=True)
+        for resolved_y in _resolve_plot_depths(avg_sta.coords['y'].values, selected_y=plot_y):
+            _plot_sta_1d(
+                avg_sta,
+                dirpath_1d / f'sta_y_{resolved_y:g}.png',
+                resolved_y,
+                trigger_pop,
+                signal_type,
+                show_zero_line=show_zero_line,
+                zero_line_alpha=ZERO_LINE_ALPHA,
+            )
+
+    return {
+        'trigger_pop': str(trigger_pop),
+        'cache_dir': Path(dirpath_cache),
+        'cache_nc': Path(cache_nc),
+        'manifest_path': Path(manifest_path),
+        'spike_cache': Path(fpath_spikes),
+        'spike_cache_hit': bool(spike_cache_hit),
+        'sta_cache_hit': bool(sta_cache_hit),
+        'plot_2d_path': None if plot_2d_path is None else Path(plot_2d_path),
+        'plot_1d_dir': None if dirpath_1d is None else Path(dirpath_1d),
+    }
 
 
 def _plot_sta_2d(
@@ -572,22 +785,27 @@ def _plot_sta_2d(
         trigger_pop: str,
         signal_type: str,
         show_zero_line: bool = False,
+        zero_line_alpha: float = 0.5,
         layer_spans=None,
         ) -> None:
     """Render the all-channel depth x time STA image."""
     time_rel_ms = np.asarray(avg_sta.coords['time_rel'].values, dtype=float) * 1e3
     y_values = np.asarray(avg_sta.coords['y'].values, dtype=float)
+    avg_values = np.asarray(avg_sta.values, dtype=float)
+    vmin, vmax = _get_symmetric_color_limits(avg_values)
     fig, ax = plt.subplots(figsize=(9, 5))
     image = ax.imshow(
-        np.asarray(avg_sta.values, dtype=float),
+        avg_values,
         aspect='auto',
         origin='upper',
         extent=[time_rel_ms[0], time_rel_ms[-1], y_values[-1], y_values[0]],
-        cmap='coolwarm' if signal_type == 'csd' else 'viridis',
+        cmap='coolwarm',
+        vmin=vmin,
+        vmax=vmax,
     )
     fig.colorbar(image, ax=ax, label=signal_type.upper())
     if show_zero_line:
-        ax.axvline(0.0, color='k', linestyle='--', linewidth=1)
+        ax.axvline(0.0, color='k', linestyle='--', linewidth=1, alpha=float(zero_line_alpha))
     if layer_spans is not None:
         _add_layer_borders(ax, layer_spans, y_values, time_rel_ms[0], time_rel_ms[-1])
     ax.set_xlabel('Time relative to spike (ms)')
@@ -605,6 +823,7 @@ def _plot_sta_1d(
         trigger_pop: str,
         signal_type: str,
         show_zero_line: bool = False,
+        zero_line_alpha: float = 0.5,
         ) -> None:
     """Render one single-channel STA trace from the cached all-channel average."""
     row = avg_sta.sel(y=resolved_y)
@@ -612,7 +831,7 @@ def _plot_sta_1d(
     fig, ax = plt.subplots(figsize=(9, 3))
     ax.plot(time_rel_ms, np.asarray(row.values, dtype=float), color='k', linewidth=2)
     if show_zero_line:
-        ax.axvline(0.0, color='r', linestyle='--', linewidth=1)
+        ax.axvline(0.0, color='r', linestyle='--', linewidth=1, alpha=float(zero_line_alpha))
     ax.set_xlabel('Time relative to spike (ms)')
     ax.set_ylabel(signal_type.upper())
     ax.set_title(f'{signal_type.upper()} STA @ y={resolved_y:g}, trigger pop {trigger_pop}')
@@ -627,21 +846,26 @@ def main() -> None:
     exp_label = get_exp_label(FPATH_SIM_RESULT)
     dirpath_proc = get_proc_dir(FPATH_SIM_RESULT, DIRPATH_PROC_ROOT)
     signal_type = _normalize_signal_type(SIGNAL_TYPE)
+    all_pop_names = None
+    if _needs_all_trigger_pops(TRIGGER_POPS):
+        all_pop_names = _load_available_trigger_pop_names(
+            FPATH_SIM_RESULT,
+            dirpath_proc,
+            fpath_spikes=FPATH_SPIKES,
+        )
+    trigger_pops = _resolve_trigger_pops(
+        TRIGGER_POPS,
+        pop_group_name=POP_GROUP_NAME,
+        all_pop_names=all_pop_names,
+    )
     layer_spans = None
     dirpath_out = _get_sta_output_dir(
         DIRPATH_RESULTS_ROOT,
         exp_label,
-        TRIGGER_POP,
+        trigger_pops,
         signal_type,
         TIME_WIN_MS,
-    )
-    dirpath_cache = _get_sta_cache_dir(
-        dirpath_proc,
-        TRIGGER_POP,
-        signal_type,
-        SPIKE_T_LIMITS_S,
-        TIME_WIN_MS,
-        SUBTRACT_CHAN_MEAN,
+        pop_group_name=POP_GROUP_NAME,
     )
 
     signal, fpath_lfp_cache = _get_signal_for_analysis(
@@ -653,62 +877,45 @@ def main() -> None:
     )
     signal.name = signal_type
 
-    spikes, fpath_spikes, spike_cache_hit = _load_or_extract_trigger_spikes(
-        FPATH_SIM_RESULT,
-        dirpath_proc,
-        TRIGGER_POP,
-        SPIKE_T_LIMITS_S,
-        fpath_spikes=FPATH_SPIKES,
-    )
-
     if SHOW_LAYER_BORDERS:
         layer_spans = _get_layer_spans_um(_load_layer_config(FPATH_LAYER_CONFIG))
 
-    avg_sta, cache_nc, result_nc, manifest_path, sta_cache_hit = _load_or_compute_sta_avg_cache(
-        signal,
-        spikes,
-        TRIGGER_POP,
-        signal_type,
-        SPIKE_T_LIMITS_S,
-        TIME_WIN_MS,
-        SUBTRACT_CHAN_MEAN,
-        dirpath_cache,
-        dirpath_out,
-        FPATH_SIM_RESULT,
-        fpath_lfp_cache,
-        fpath_spikes,
-    )
+    print(f'Output dir: {dirpath_out}')
+    dirpath_1d, dirpath_2d = _get_sta_plot_dirs(dirpath_out, MAKE_PLOT_1D, MAKE_PLOT_2D)
+    if dirpath_1d is not None:
+        print(f'1D plot dir: {dirpath_1d}')
+    if dirpath_2d is not None:
+        print(f'2D plot dir: {dirpath_2d}')
 
-    if MAKE_PLOT_2D:
-        dirpath_out.mkdir(parents=True, exist_ok=True)
-        _plot_sta_2d(
-            avg_sta,
-            dirpath_out / 'sta_2d.png',
-            TRIGGER_POP,
+    for trigger_pop in trigger_pops:
+        pop_result = _run_sta_for_trigger_pop(
+            signal,
+            trigger_pop,
+            trigger_pops,
+            POP_GROUP_NAME,
             signal_type,
-            show_zero_line=SHOW_ZERO_LINE,
+            SPIKE_T_LIMITS_S,
+            TIME_WIN_MS,
+            SUBTRACT_CHAN_MEAN,
+            dirpath_proc,
+            dirpath_out,
+            FPATH_SIM_RESULT,
+            fpath_lfp_cache,
+            FPATH_SPIKES,
+            MAKE_PLOT_1D,
+            MAKE_PLOT_2D,
+            PLOT_Y,
+            SHOW_ZERO_LINE,
             layer_spans=layer_spans,
         )
-
-    if MAKE_PLOT_1D:
-        dirpath_single = dirpath_out / 'single_chans'
-        dirpath_single.mkdir(parents=True, exist_ok=True)
-        for resolved_y in _resolve_plot_depths(avg_sta.coords['y'].values, selected_y=PLOT_Y):
-            _plot_sta_1d(
-                avg_sta,
-                dirpath_single / f'sta_y_{resolved_y:g}.png',
-                resolved_y,
-                TRIGGER_POP,
-                signal_type,
-                show_zero_line=SHOW_ZERO_LINE,
-            )
-
-    print(f'Output dir: {dirpath_out}')
-    print(f'STA cache file: {cache_nc}')
-    print(f'Results cache copy: {result_nc}')
-    print(f'Manifest: {manifest_path}')
-    print(f'Spike cache: {fpath_spikes} ({"hit" if spike_cache_hit else "miss"})')
-    print(f'STA cache: {"hit" if sta_cache_hit else "miss"} at {cache_nc}')
+        print(f'[{trigger_pop}] STA cache file: {pop_result["cache_nc"]}')
+        print(f'[{trigger_pop}] Manifest: {pop_result["manifest_path"]}')
+        print(f'[{trigger_pop}] Spike cache: {pop_result["spike_cache"]} ({"hit" if pop_result["spike_cache_hit"] else "miss"})')
+        print(f'[{trigger_pop}] STA cache: {"hit" if pop_result["sta_cache_hit"] else "miss"} at {pop_result["cache_nc"]}')
+        if pop_result['plot_2d_path'] is not None:
+            print(f'[{trigger_pop}] 2D plot: {pop_result["plot_2d_path"]}')
+        if pop_result['plot_1d_dir'] is not None:
+            print(f'[{trigger_pop}] 1D plots: {pop_result["plot_1d_dir"]}')
 
 
 if __name__ == '__main__':
