@@ -1,9 +1,12 @@
-# Batch PKL Rates + PSD Extraction
+# Batch SpikeData Rates + PSD Extraction
 
 - Batch root: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_src/hpc_remote/grid_5x5_thal`
-- Rates cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/grid_5x5_thal/batch_rates__source-pkl__var-rates__pops-no-frz-fixed-order-windowed__dt-5ms__tau-20ms__lazy.nc`
-- PSD cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/grid_5x5_thal/batch_rates_psd__source-pkl__var-rates__pops-no-frz-fixed-order-windowed__dt-5ms__tau-20ms__f-2-80__lazy.nc`
-- Source type: `pkl`
+- Spike cache dir: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/grid_5x5_thal/spike_cache__source-pkl__pops-all-fixed-order__t-1-end__abs-s`
+- Raw rates cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/grid_5x5_thal/batch_rates__source-spike-data__var-rates__pops-all-fixed-order__dt-5ms__tau-20ms__lazy.nc`
+- Public rates cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/grid_5x5_thal/batch_rates__source-spike-data__var-rates__pops-no-frz-fixed-order__dt-5ms__tau-20ms__lazy.nc`
+- Public PSD cache file: `/home/nnovikov/repo/sim_data_analyzer/dev_scratch/data_proc/grid_5x5_thal/batch_rates_psd__source-spike-data__var-rates__pops-no-frz-fixed-order__dt-5ms__tau-20ms__f-2-80__lazy.nc`
+- Source type: `SpikeData`
+- Upstream raw source: `pkl`
 - Extracted signal: `population rates`
 - PSD method: `Welch`
 - Population filter: exclude names containing `frz`

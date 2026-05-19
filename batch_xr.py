@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from sim_data_analyzer import netpyne_res_parse_utils as parse_utils
 from sim_data_analyzer.data_proc_utils import calc_pop_rate_dynamics
 from sim_data_analyzer.spike_data import SpikeData
 from sim_data_analyzer.xr_adapters import get_lfp_xr, get_net_rate_dynamics_xr
@@ -36,11 +37,13 @@ from sim_data_analyzer.xr_io import load_xr, save_xr
 __all__ = [
     "extract_batch_params_to_xr",
     "iter_batch_jobs",
+    "extract_batch_spike_data_from_pkl",
     "collect_batch_xr",
     "collect_batch_xr_set",
     "collect_batch_json",
     "collect_batch_rates_from_pkl",
     "collect_batch_lfp_from_pkl",
+    "collect_batch_rates_from_spike_data",
 ]
 
 
@@ -376,6 +379,7 @@ def sim_result_to_rates_xr(
         dt_bin: float = 5e-3,
         tau_smooth: float | None = None,
         avg_cells: bool = True,
+        pop_names: list[str] | tuple[str, ...] | None = None,
         ) -> xr.DataArray:
     """Extract one per-job population-rate xarray from a raw sim-result dict."""
     return get_net_rate_dynamics_xr(
@@ -384,6 +388,7 @@ def sim_result_to_rates_xr(
         dt_bin=dt_bin,
         tau_smooth=tau_smooth,
         avg_cells=avg_cells,
+        pop_names=pop_names,
     )
 
 
@@ -453,6 +458,87 @@ def spike_data_to_rates_xr(
     )
     X.attrs["time_units"] = "ms" if meta["ms"] else "s"
     return X
+
+
+def _resolve_spike_extraction_request(
+        sim_result: dict[str, Any],
+        pop_names: list[str] | tuple[str, ...] | None,
+        t_limits: tuple[float, float | None],
+        combine: bool,
+        subtract_t0: bool,
+        ms: bool,
+        ndigits: int,
+        ) -> dict[str, Any]:
+    """Resolve one SpikeData extraction request into concrete per-job values."""
+    t0 = float(t_limits[0])
+    tmax = t_limits[1]
+    if tmax is None:
+        tmax = parse_utils.get_sim_duration(sim_result)
+    pop_names_resolved = parse_utils.get_pop_names(sim_result) if pop_names is None else list(pop_names)
+    return {
+        "pop_names": [str(pop_name) for pop_name in pop_names_resolved],
+        "combine": bool(combine),
+        "t0": t0,
+        "tmax": float(tmax),
+        "subtract_t0": bool(subtract_t0),
+        "ms": bool(ms),
+        "ndigits": int(ndigits),
+    }
+
+
+def _make_spike_cache_path(
+        dirpath_spikes: str | Path,
+        job_id: int,
+        fname_spikes_templ: str,
+        ) -> Path:
+    """Build one per-job SpikeData cache path from its template."""
+    return Path(dirpath_spikes) / fname_spikes_templ.format(job=job_id)
+
+
+def _ensure_job_xr_compatible(
+        template: xr.DataArray | xr.Dataset,
+        X_job: xr.DataArray | xr.Dataset,
+        ) -> None:
+    """Check that one per-job object matches the probed batch schema."""
+    if isinstance(template, xr.DataArray) != isinstance(X_job, xr.DataArray):
+        raise ValueError("Per-job batch objects should all be DataArray or all be Dataset")
+
+    if isinstance(template, xr.DataArray):
+        if tuple(template.dims) != tuple(X_job.dims):
+            raise ValueError(
+                f"Incompatible per-job dims: expected {template.dims}, got {X_job.dims}"
+            )
+        for dim_name in template.dims:
+            if template.sizes[dim_name] != X_job.sizes[dim_name]:
+                msg = (
+                    f"Incompatible per-job size for dim {dim_name!r}: "
+                    f"expected {template.sizes[dim_name]}, got {X_job.sizes[dim_name]}"
+                )
+                if dim_name == "time":
+                    msg += (
+                        ". If this came from SpikeData-derived rates, pass an "
+                        "explicit t_limits so every job uses the same time window."
+                    )
+                raise ValueError(msg)
+            if dim_name in template.coords and dim_name in X_job.coords:
+                if not np.array_equal(
+                        np.asarray(template.coords[dim_name].values),
+                        np.asarray(X_job.coords[dim_name].values)):
+                    raise ValueError(
+                        f"Incompatible per-job coordinate values for dim {dim_name!r}. "
+                        "If this came from SpikeData-derived rates, pass an explicit "
+                        "t_limits so every job uses the same time window."
+                    )
+        return
+
+    assert isinstance(template, xr.Dataset) and isinstance(X_job, xr.Dataset)
+    if list(template.data_vars) != list(X_job.data_vars):
+        raise ValueError(
+            f"Incompatible per-job Dataset variables: expected {list(template.data_vars)}, "
+            f"got {list(X_job.data_vars)}"
+        )
+    for var_name in template.data_vars:
+        _ensure_job_xr_compatible(template[var_name], X_job[var_name])
 
 
 def _make_combined_coords(job_idx_xr: xr.DataArray, template: xr.DataArray | xr.Dataset):
@@ -839,8 +925,10 @@ def _collect_batch_eager(
             continue
 
         if isinstance(X_out, xr.DataArray):
+            _ensure_job_xr_compatible(first_obj, X_job)
             X_out.data[entry["idx"]] = np.asarray(X_job.values)
         else:
+            _ensure_job_xr_compatible(first_obj, X_job)
             for var_name in X_out.data_vars:
                 X_out[var_name].data[entry["idx"]] = np.asarray(X_job[var_name].values)
 
@@ -913,6 +1001,7 @@ def _write_batch_netcdf(
                 raise
             if X_job is None:
                 continue
+            _ensure_job_xr_compatible(first_obj, X_job)
             _write_batch_entry(
                 nc_file,
                 entry,
@@ -1153,15 +1242,26 @@ def _make_rates_from_pkl_reader(
         dt_bin: float,
         tau_smooth: float | None,
         avg_cells: bool,
+        pop_names: list[str] | tuple[str, ...] | None = None,
         ) -> Callable[[dict[str, Any]], xr.DataArray]:
     """Build one per-job reader for rates computed from raw pickles."""
-    return lambda job: sim_result_to_rates_xr(
-        load_job_pkl(job, dirpath_data, fname_templ=fname_templ),
-        t_limits=t_limits,
-        dt_bin=dt_bin,
-        tau_smooth=tau_smooth,
-        avg_cells=avg_cells,
-    )
+    pop_names_state = None if pop_names is None else [str(pop_name) for pop_name in pop_names]
+
+    def read_job(job: dict[str, Any]) -> xr.DataArray:
+        nonlocal pop_names_state
+        sim_result = load_job_pkl(job, dirpath_data, fname_templ=fname_templ)
+        if pop_names_state is None:
+            pop_names_state = [str(pop_name) for pop_name in parse_utils.get_pop_names(sim_result)]
+        return sim_result_to_rates_xr(
+            sim_result,
+            t_limits=t_limits,
+            dt_bin=dt_bin,
+            tau_smooth=tau_smooth,
+            avg_cells=avg_cells,
+            pop_names=pop_names_state,
+        )
+
+    return read_job
 
 
 def _make_lfp_from_pkl_reader(
@@ -1172,6 +1272,107 @@ def _make_lfp_from_pkl_reader(
     return lambda job: sim_result_to_lfp_xr(
         load_job_pkl(job, dirpath_data, fname_templ=fname_templ),
     )
+
+
+def _make_rates_from_spike_data_reader(
+        dirpath_data: str | Path,
+        fname_templ: str,
+        t_limits: tuple[float, float] | None,
+        dt_bin: float,
+        tau_smooth: float | None,
+        ) -> Callable[[dict[str, Any]], xr.DataArray]:
+    """Build one per-job reader for rates computed from cached SpikeData."""
+    return lambda job: spike_data_to_rates_xr(
+        load_job_spike_data(job, dirpath_data, fname_templ=fname_templ),
+        t_limits=t_limits,
+        dt_bin=dt_bin,
+        tau_smooth=tau_smooth,
+    )
+
+
+def extract_batch_spike_data_from_pkl(
+        job_idx_xr: xr.DataArray,
+        dirpath_data: str | Path,
+        dirpath_spikes: str | Path,
+        fname_data_templ: str = "grid_{job:05d}_data.pkl",
+        fname_spikes_templ: str = "spikes_{job:05d}.npz",
+        pop_names: list[str] | tuple[str, ...] | None = None,
+        t_limits: tuple[float, float | None] = (0, None),
+        combine: bool = True,
+        subtract_t0: bool = False,
+        ms: bool = False,
+        ndigits: int = 6,
+        skip_missing: bool = True,
+        ) -> Path:
+    """Extract or reuse one per-job SpikeData cache for every batch point."""
+    dirpath_data = Path(dirpath_data)
+    dirpath_spikes = Path(dirpath_spikes)
+    dirpath_spikes.mkdir(parents=True, exist_ok=True)
+
+    # Walk the batch once and ensure one matching NPZ exists per readable job.
+    for job in iter_batch_jobs(job_idx_xr):
+        fpath_spikes = _make_spike_cache_path(
+            dirpath_spikes,
+            job["job_id"],
+            fname_spikes_templ,
+        )
+        sim_result = None
+        if fpath_spikes.exists() and pop_names is not None and t_limits[1] is not None:
+            request = {
+                "pop_names": [str(pop_name) for pop_name in pop_names],
+                "combine": bool(combine),
+                "t0": float(t_limits[0]),
+                "tmax": float(t_limits[1]),
+                "subtract_t0": bool(subtract_t0),
+                "ms": bool(ms),
+                "ndigits": int(ndigits),
+            }
+        else:
+            try:
+                sim_result = load_job_pkl(job, dirpath_data, fname_templ=fname_data_templ)
+            except (FileNotFoundError, OSError, RuntimeError):
+                if skip_missing:
+                    continue
+                raise
+            request = _resolve_spike_extraction_request(
+                sim_result,
+                pop_names=pop_names,
+                t_limits=t_limits,
+                combine=combine,
+                subtract_t0=subtract_t0,
+                ms=ms,
+                ndigits=ndigits,
+            )
+
+        # Reuse a matching per-job spike cache and fail fast on mismatches.
+        if fpath_spikes.exists():
+            spike_data = SpikeData.load(fpath_spikes)
+            if spike_data.matches_request(**request):
+                continue
+            raise ValueError(
+                f"SpikeData cache does not match requested extraction settings: {fpath_spikes}"
+            )
+
+        if sim_result is None:
+            try:
+                sim_result = load_job_pkl(job, dirpath_data, fname_templ=fname_data_templ)
+            except (FileNotFoundError, OSError, RuntimeError):
+                if skip_missing:
+                    continue
+                raise
+        spike_data = SpikeData.from_sim_result(
+            sim_result,
+            pop_names=request["pop_names"],
+            combine=request["combine"],
+            t0=request["t0"],
+            tmax=request["tmax"],
+            subtract_t0=request["subtract_t0"],
+            ms=request["ms"],
+            ndigits=request["ndigits"],
+        )
+        spike_data.save(fpath_spikes)
+
+    return dirpath_spikes
 
 
 def collect_batch_xr(
@@ -1382,6 +1583,7 @@ def collect_batch_rates_from_pkl(
         dt_bin: float = 5e-3,
         tau_smooth: float | None = None,
         avg_cells: bool = True,
+        pop_names: list[str] | tuple[str, ...] | None = None,
         cache_path: str | Path | None = None,
         lazy: bool = False,
         load: bool = False,
@@ -1402,6 +1604,7 @@ def collect_batch_rates_from_pkl(
         dt_bin=dt_bin,
         tau_smooth=tau_smooth,
         avg_cells=avg_cells,
+        pop_names=pop_names,
     )
     return _load_or_build_batch_xr(
         cache_step="collect_batch_rates_from_pkl",
@@ -1411,6 +1614,7 @@ def collect_batch_rates_from_pkl(
             "dt_bin": dt_bin,
             "tau_smooth": tau_smooth,
             "avg_cells": avg_cells,
+            "pop_names": pop_names,
             "skip_missing": skip_missing,
         },
         cache_source=_make_batch_source_fingerprint(job_idx_xr, dirpath_data),
@@ -1461,6 +1665,65 @@ def collect_batch_lfp_from_pkl(
         cache_step="collect_batch_lfp_from_pkl",
         cache_params={
             "fname_templ": fname_templ,
+            "skip_missing": skip_missing,
+        },
+        cache_source=_make_batch_source_fingerprint(job_idx_xr, dirpath_data),
+        build_eager=lambda: _collect_batch_eager(
+            job_idx_xr,
+            reader,
+            chunks=chunks,
+            skip_missing=skip_missing,
+        ),
+        build_lazy=lambda fpath_cache, attrs: _write_batch_netcdf(
+            fpath_cache,
+            job_idx_xr,
+            reader,
+            chunks=chunks,
+            attrs=attrs,
+            skip_missing=skip_missing,
+            load=load,
+            open_kwargs=open_kwargs,
+            overwrite=overwrite,
+        ),
+        cache_path=cache_path,
+        cache_data_type="dataarray",
+        lazy=lazy,
+        load=load,
+        open_kwargs=open_kwargs,
+        overwrite=overwrite,
+    )
+
+
+def collect_batch_rates_from_spike_data(
+        job_idx_xr: xr.DataArray,
+        dirpath_data: str | Path,
+        fname_templ: str = "spikes_{job:05d}.npz",
+        t_limits: tuple[float, float] | None = None,
+        dt_bin: float = 5e-3,
+        tau_smooth: float | None = None,
+        cache_path: str | Path | None = None,
+        lazy: bool = False,
+        load: bool = False,
+        open_kwargs: dict[str, Any] | None = None,
+        chunks: dict[str, int] | None = None,
+        skip_missing: bool = True,
+        overwrite: bool = True,
+        ) -> xr.DataArray:
+    """Collect population-rate xarrays computed from cached per-job SpikeData."""
+    reader = _make_rates_from_spike_data_reader(
+        dirpath_data,
+        fname_templ=fname_templ,
+        t_limits=t_limits,
+        dt_bin=dt_bin,
+        tau_smooth=tau_smooth,
+    )
+    return _load_or_build_batch_xr(
+        cache_step="collect_batch_rates_from_spike_data",
+        cache_params={
+            "fname_templ": fname_templ,
+            "t_limits": t_limits,
+            "dt_bin": dt_bin,
+            "tau_smooth": tau_smooth,
             "skip_missing": skip_missing,
         },
         cache_source=_make_batch_source_fingerprint(job_idx_xr, dirpath_data),

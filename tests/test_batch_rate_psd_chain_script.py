@@ -45,7 +45,7 @@ class TestBatchRatePsdChainScript(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         cls.collected = _load_module(
             "batch_rate_psd_chain_script",
-            repo_root / "dev_scratch" / "demo" / "batch_rate_psd_chain.py",
+            repo_root / "dev_scratch" / "demo" / "batch" / "batch_rate_psd_chain.py",
         )
 
     def test_run_batch_rate_psd_chain_computes_then_reuses_caches(self):

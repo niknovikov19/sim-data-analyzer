@@ -15,15 +15,18 @@ The main public functions are:
 
 - `extract_batch_params_to_xr(...)`
 - `iter_batch_jobs(...)`
+- `extract_batch_spike_data_from_pkl(...)`
 - `collect_batch_xr(...)`
 - `collect_batch_xr_set(...)`
 - `collect_batch_json(...)`
 - `collect_batch_rates_from_pkl(...)`
 - `collect_batch_lfp_from_pkl(...)`
+- `collect_batch_rates_from_spike_data(...)`
 
 The public split is semantic:
 
 - raw `pkl` rates and raw `pkl` LFP stay separate functions
+- raw `pkl` spike extraction is its own semantic step
 - already-formed job outputs get one function per source type
 
 ## Batch Index
@@ -150,6 +153,7 @@ Useful args:
 - `dt_bin`
 - `tau_smooth`
 - `avg_cells`
+- `pop_names`
 
 Example:
 
@@ -159,6 +163,37 @@ rates_xr = collect_batch_rates_from_pkl(
     dirpath_data,
     dt_bin=5e-3,
     tau_smooth=20e-3,
+)
+```
+
+When raw job files do not preserve a consistent population order, pass one
+shared `pop_names` list for the whole batch. The direct `pkl` path now also
+keeps the first readable job order by default so batch stacking stays stable.
+
+### Raw sim-result pickles: SpikeData cache
+
+Use `extract_batch_spike_data_from_pkl(...)` when you want one reusable
+SpikeData cache file per job before collecting rates or running other
+spike-based analyses.
+
+Defaults:
+
+- one NPZ per job in `dirpath_spikes`
+- combined spikes per population
+- no `t0` subtraction
+- seconds, not milliseconds
+- cache mismatch raises
+
+Example:
+
+```python
+extract_batch_spike_data_from_pkl(
+    job_idx_xr,
+    dirpath_data,
+    dirpath_spikes,
+    fname_data_templ="grid_{job:05d}_data.pkl",
+    fname_spikes_templ="spikes_{job:05d}.npz",
+    t_limits=(0.0, None),
 )
 ```
 
@@ -176,6 +211,23 @@ Example:
 lfp_xr = collect_batch_lfp_from_pkl(
     job_idx_xr,
     dirpath_data,
+)
+```
+
+### Per-job SpikeData caches: rates
+
+Use `collect_batch_rates_from_spike_data(...)` when you already have one
+SpikeData NPZ per job and want the fast path to batch rate dynamics.
+
+Example:
+
+```python
+rates_xr = collect_batch_rates_from_spike_data(
+    job_idx_xr,
+    dirpath_spikes,
+    fname_templ="spikes_{job:05d}.npz",
+    dt_bin=5e-3,
+    tau_smooth=20e-3,
 )
 ```
 
@@ -256,7 +308,8 @@ That keeps the responsibilities split cleanly:
 
 For a simple end-to-end example, see:
 
-- [batch_rate_psd_chain.py](/home/nnovikov/repo/sim_data_analyzer/dev_scratch/demo/batch_rate_psd_chain.py)
+- [batch_rate_psd_chain.py](/home/nnovikov/repo/sim_data_analyzer/dev_scratch/demo/batch/batch_rate_psd_chain.py)
+- [batch_spike_rate_psd_chain.py](/home/nnovikov/repo/sim_data_analyzer/dev_scratch/demo/batch/batch_spike_rate_psd_chain.py)
 
 That demo shows:
 

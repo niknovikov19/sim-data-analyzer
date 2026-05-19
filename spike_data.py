@@ -41,6 +41,13 @@ def _decode_ragged(values: np.ndarray, offsets: np.ndarray) -> List[np.ndarray]:
     return spike_list
 
 
+def _normalize_pop_names(pop_names: List[str] | tuple[str, ...] | None) -> List[str] | None:
+    """Convert optional population names into one stable string list."""
+    if pop_names is None:
+        return None
+    return [str(pop_name) for pop_name in pop_names]
+
+
 @dataclass(frozen=True)
 class _SpikeMeta:
     """Metadata that defines one extracted spike representation."""
@@ -195,6 +202,36 @@ class SpikeData:
             "ndigits": self._meta.ndigits,
         }
 
+    def matches_request(
+            self,
+            *,
+            pop_names: List[str] | tuple[str, ...] | None,
+            combine: bool,
+            t0: float,
+            tmax: float,
+            subtract_t0: bool,
+            ms: bool,
+            ndigits: int,
+            ) -> bool:
+        """Return whether this SpikeData matches one resolved extraction request.
+
+        ``t0`` and ``tmax`` should be concrete resolved values rather than a
+        partially specified window such as ``(t0, None)``.
+        """
+        expected_pop_names = _normalize_pop_names(pop_names)
+        if expected_pop_names is not None and self.get_pop_names() != expected_pop_names:
+            return False
+
+        meta = self.metadata
+        return (
+            bool(meta["combine"]) == bool(combine) and
+            float(meta["t0"]) == float(t0) and
+            float(meta["tmax"]) == float(tmax) and
+            bool(meta["subtract_t0"]) == bool(subtract_t0) and
+            bool(meta["ms"]) == bool(ms) and
+            int(meta["ndigits"]) == int(ndigits)
+        )
+
     def get_pop_names(self) -> List[str]:
         """Return population names in stored order."""
         return list(self._pop_names)
@@ -279,4 +316,3 @@ class SpikeData:
                 arrays[f"{prefix}cell_offsets"] = offsets
 
         np.savez(fpath, **arrays)
-

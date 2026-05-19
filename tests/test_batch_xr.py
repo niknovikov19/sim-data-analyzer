@@ -9,6 +9,7 @@ import numpy as np
 import xarray as xr
 
 from sim_data_analyzer import batch_xr as collected
+from sim_data_analyzer.spike_data import SpikeData
 from sim_data_analyzer.tests.test_netpyne_res_parse_utils import _make_sim_result
 from sim_data_analyzer.xr_io import save_xr
 
@@ -23,6 +24,19 @@ def _make_job_sim_result(extra_it2_spikes: int):
     order = np.argsort(np.asarray(spkt, dtype=float))
     sim_result["simData"]["spkid"] = [spkid[idx] for idx in order]
     sim_result["simData"]["spkt"] = [spkt[idx] for idx in order]
+    return sim_result
+
+
+def _reorder_sim_result_pops(sim_result, pop_order):
+    sim_result = copy.deepcopy(sim_result)
+    sim_result["net"]["pops"] = {
+        pop_name: sim_result["net"]["pops"][pop_name]
+        for pop_name in pop_order
+    }
+    sim_result["net"]["params"]["popParams"] = {
+        pop_name: sim_result["net"]["params"]["popParams"][pop_name]
+        for pop_name in pop_order
+    }
     return sim_result
 
 
@@ -55,6 +69,28 @@ def _make_rate_batch(root: Path):
     for job_id, rx in enumerate([10.0, 20.0]):
         _write_cfg(dirpath_cfg, job_id, rx=rx, wx=0.1)
         sim_result = _make_job_sim_result(extra_it2_spikes=job_id)
+        with (dirpath_data / f"grid_{job_id:05d}_data.pkl").open("wb") as fobj:
+            pickle.dump(sim_result, fobj)
+
+    return _build_job_idx_xr(dirpath_cfg), dirpath_data
+
+
+def _make_rate_batch_varying_pop_order(root: Path):
+    dirpath_cfg = root / "cfg"
+    dirpath_data = root / "data"
+    dirpath_cfg.mkdir()
+    dirpath_data.mkdir()
+
+    orders = [
+        ["IT2", "PV2"],
+        ["PV2", "IT2"],
+    ]
+    for job_id, rx in enumerate([10.0, 20.0]):
+        _write_cfg(dirpath_cfg, job_id, rx=rx, wx=0.1)
+        sim_result = _reorder_sim_result_pops(
+            _make_job_sim_result(extra_it2_spikes=job_id),
+            orders[job_id],
+        )
         with (dirpath_data / f"grid_{job_id:05d}_data.pkl").open("wb") as fobj:
             pickle.dump(sim_result, fobj)
 
@@ -160,11 +196,13 @@ class TestCollectedBatchXR(unittest.TestCase):
         for name in [
                 "extract_batch_params_to_xr",
                 "iter_batch_jobs",
+                "extract_batch_spike_data_from_pkl",
                 "collect_batch_xr",
                 "collect_batch_xr_set",
                 "collect_batch_json",
                 "collect_batch_rates_from_pkl",
-                "collect_batch_lfp_from_pkl"]:
+                "collect_batch_lfp_from_pkl",
+                "collect_batch_rates_from_spike_data"]:
             self.assertTrue(hasattr(collected, name), name)
 
         for name in [
@@ -174,7 +212,6 @@ class TestCollectedBatchXR(unittest.TestCase):
                 "write_batch_json_netcdf",
                 "write_batch_rates_from_pkl_netcdf",
                 "write_batch_lfp_from_pkl_netcdf",
-                "collect_batch_rates_from_spike_data",
                 "write_batch_rates_from_spike_data_netcdf"]:
             self.assertFalse(hasattr(collected, name), name)
 
@@ -222,6 +259,168 @@ class TestCollectedBatchXR(unittest.TestCase):
                 root / "cache" / "batch_rates.nc",
                 {"fname_templ": "grid_{job:05d}_other.pkl"},
             )
+
+    def test_extract_batch_spike_data_from_pkl_writes_and_validates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_idx_xr, dirpath_data = _make_rate_batch(root)
+            dirpath_spikes = root / "spikes"
+
+            out = collected.extract_batch_spike_data_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                dirpath_spikes,
+                fname_data_templ="grid_{job:05d}_data.pkl",
+                pop_names=["IT2", "PV2"],
+                t_limits=(0.0, 0.006),
+            )
+            self.assertEqual(out, dirpath_spikes)
+            self.assertTrue((dirpath_spikes / "spikes_00000.npz").exists())
+            self.assertTrue((dirpath_spikes / "spikes_00001.npz").exists())
+
+            collected.extract_batch_spike_data_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                dirpath_spikes,
+                fname_data_templ="grid_{job:05d}_data.pkl",
+                pop_names=["IT2", "PV2"],
+                t_limits=(0.0, 0.006),
+            )
+
+            with self.assertRaises(ValueError):
+                collected.extract_batch_spike_data_from_pkl(
+                    job_idx_xr,
+                    dirpath_data,
+                    dirpath_spikes,
+                    fname_data_templ="grid_{job:05d}_data.pkl",
+                    pop_names=["IT2", "PV2"],
+                    t_limits=(0.0, 0.006),
+                    subtract_t0=True,
+                )
+
+    def test_extract_batch_spike_data_from_pkl_skip_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_idx_xr, dirpath_data = _make_rate_batch(root)
+            (dirpath_data / "grid_00001_data.pkl").unlink()
+            dirpath_spikes = root / "spikes"
+
+            collected.extract_batch_spike_data_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                dirpath_spikes,
+                fname_data_templ="grid_{job:05d}_data.pkl",
+                t_limits=(0.0, 0.006),
+                skip_missing=True,
+            )
+            self.assertTrue((dirpath_spikes / "spikes_00000.npz").exists())
+            self.assertFalse((dirpath_spikes / "spikes_00001.npz").exists())
+
+            with self.assertRaises(RuntimeError):
+                collected.extract_batch_spike_data_from_pkl(
+                    job_idx_xr,
+                    dirpath_data,
+                    root / "spikes_strict",
+                    fname_data_templ="grid_{job:05d}_data.pkl",
+                    t_limits=(0.0, 0.006),
+                    skip_missing=False,
+                )
+
+    def test_collect_batch_rates_from_spike_data_matches_pkl_and_caches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_idx_xr, dirpath_data = _make_rate_batch(root)
+            dirpath_spikes = root / "spikes"
+
+            collected.extract_batch_spike_data_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                dirpath_spikes,
+                fname_data_templ="grid_{job:05d}_data.pkl",
+                t_limits=(0.0, 0.006),
+                combine=True,
+                subtract_t0=False,
+                ms=False,
+            )
+
+            rates_from_pkl = collected.collect_batch_rates_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                dt_bin=1e-3,
+                t_limits=(0.0, 0.006),
+            )
+            rates_from_spikes = collected.collect_batch_rates_from_spike_data(
+                job_idx_xr,
+                dirpath_spikes,
+                dt_bin=1e-3,
+                t_limits=(0.0, 0.006),
+            )
+
+            self.assertEqual(rates_from_spikes.dims, ("rx", "wx", "pop", "time"))
+            self._assert_same_values(rates_from_pkl, rates_from_spikes)
+
+            self._assert_cache_behavior(
+                lambda **kwargs: collected.collect_batch_rates_from_spike_data(
+                    job_idx_xr,
+                    dirpath_spikes,
+                    dt_bin=1e-3,
+                    t_limits=(0.0, 0.006),
+                    chunks={"rx": 1, "time": 3},
+                    **kwargs,
+                ),
+                root / "cache" / "batch_spike_rates.nc",
+                {"fname_templ": "other_{job:05d}.npz"},
+            )
+
+    def test_collect_batch_rates_from_pkl_handles_varying_pop_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_idx_xr, dirpath_data = _make_rate_batch_varying_pop_order(root)
+
+            rates = collected.collect_batch_rates_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                dt_bin=1e-3,
+            )
+
+            self.assertEqual(rates.dims, ("rx", "wx", "pop", "time"))
+            self.assertEqual(list(rates.coords["pop"].values), ["IT2", "PV2"])
+
+    def test_collect_batch_rates_from_spike_data_requires_consistent_time_coords(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dirpath_cfg = root / "cfg"
+            dirpath_spikes = root / "spikes"
+            dirpath_cfg.mkdir()
+            dirpath_spikes.mkdir()
+            _write_cfg(dirpath_cfg, 0, rx=10.0, wx=0.1)
+            _write_cfg(dirpath_cfg, 1, rx=20.0, wx=0.1)
+            job_idx_xr = _build_job_idx_xr(dirpath_cfg)
+
+            SpikeData.from_sim_result(
+                _make_job_sim_result(extra_it2_spikes=0),
+                combine=True,
+                t0=0.0,
+                tmax=0.006,
+                subtract_t0=False,
+                ms=False,
+            ).save(dirpath_spikes / "spikes_00000.npz")
+            SpikeData.from_sim_result(
+                _make_job_sim_result(extra_it2_spikes=1),
+                combine=True,
+                t0=0.0,
+                tmax=0.005,
+                subtract_t0=False,
+                ms=False,
+            ).save(dirpath_spikes / "spikes_00001.npz")
+
+            with self.assertRaisesRegex(ValueError, "t_limits"):
+                collected.collect_batch_rates_from_spike_data(
+                    job_idx_xr,
+                    dirpath_spikes,
+                    t_limits=None,
+                    dt_bin=1e-3,
+                )
 
     def test_collect_batch_lfp_from_pkl_cached(self):
         with tempfile.TemporaryDirectory() as tmpdir:

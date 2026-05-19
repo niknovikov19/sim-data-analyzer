@@ -129,7 +129,15 @@ def get_pop_rate_dynamics_xr(
         t_limits[1] = get_sim_duration(sim_result)
 
     if avg_cells:
-        pop_spikes = get_pop_spikes(sim_result, pop_name, combine_cells=True)
+        pop_spikes = get_pop_spikes(
+            sim_result,
+            pop_name,
+            combine_cells=True,
+            t0=t_limits[0],
+            tmax=t_limits[1],
+            subtract_t0=False,
+            ms=False,
+        )
         pop_size = get_pop_size(sim_result, pop_name)
         if pop_size == 0:
             tvec = _make_rate_tvec(tuple(t_limits), dt_bin)
@@ -140,7 +148,15 @@ def get_pop_rate_dynamics_xr(
             )
         return xr.DataArray(values, dims=['time'], coords={'time': tvec})
 
-    pop_spikes = get_pop_spikes(sim_result, pop_name, combine_cells=False)
+    pop_spikes = get_pop_spikes(
+        sim_result,
+        pop_name,
+        combine_cells=False,
+        t0=t_limits[0],
+        tmax=t_limits[1],
+        subtract_t0=False,
+        ms=False,
+    )
     cell_gids = get_pop_cell_gids(sim_result, pop_name)
     if len(cell_gids) == 0:
         return None
@@ -160,7 +176,8 @@ def get_net_rate_dynamics_xr(
         t_limits: Tuple[float, float | None] = (0, None),
         dt_bin: float = 5e-3,
         tau_smooth: float | None = None,
-        avg_cells: bool = True
+        avg_cells: bool = True,
+        pop_names: list[str] | tuple[str, ...] | None = None,
         ) -> xr.DataArray:
     """Convert network population rate dynamics to an xarray DataArray."""
 
@@ -171,10 +188,18 @@ def get_net_rate_dynamics_xr(
     if t_limits[1] is None:
         t_limits[1] = get_sim_duration(sim_result)
 
-    pop_names = get_pop_names(sim_result)
+    pop_names = get_pop_names(sim_result) if pop_names is None else [str(pop_name) for pop_name in pop_names]
     ncells = get_net_size(sim_result)
     net_spikes = {
-        pop_name: get_pop_spikes(sim_result, pop_name, combine_cells=True)
+        pop_name: get_pop_spikes(
+            sim_result,
+            pop_name,
+            combine_cells=True,
+            t0=t_limits[0],
+            tmax=t_limits[1],
+            subtract_t0=False,
+            ms=False,
+        )
         for pop_name in pop_names
     }
 

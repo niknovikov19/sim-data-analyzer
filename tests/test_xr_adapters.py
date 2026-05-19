@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import inspect
 import sys
@@ -120,6 +121,33 @@ class TestCollectedXRAdapters(unittest.TestCase):
             dims=["cell_gid", "time"],
             coords={"cell_gid": [0, 1], "time": tvec},
         )
+        xr.testing.assert_identical(actual, expected)
+
+    def test_get_pop_rate_dynamics_xr_prefilters_spikes_before_binning(self):
+        sim_result = copy.deepcopy(self.sim_result)
+        sim_result["simConfig"]["duration"] = 7.0
+        sim_result["simData"]["spkid"].append(2)
+        sim_result["simData"]["spkt"].append(6.0004)
+
+        actual = collected.get_pop_rate_dynamics_xr(
+            sim_result, "PV2", t_limits=(0, 0.006), dt_bin=0.001
+        )
+        pop_spikes = collected.get_pop_spikes(
+            sim_result,
+            "PV2",
+            combine_cells=True,
+            t0=0,
+            tmax=0.006,
+            subtract_t0=False,
+            ms=False,
+        )
+        tvec, values = proc.calc_pop_rate_dynamics(
+            pop_spikes,
+            (0, 0.006),
+            dt_bin=0.001,
+            ncells=1,
+        )
+        expected = xr.DataArray(values, dims=["time"], coords={"time": tvec})
         xr.testing.assert_identical(actual, expected)
 
     def test_get_pop_rate_dynamics_xr_empty_population(self):

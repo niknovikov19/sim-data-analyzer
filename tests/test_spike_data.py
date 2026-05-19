@@ -192,6 +192,104 @@ class TestSpikeData(unittest.TestCase):
         with self.assertRaises(ValueError):
             combined.get_pop_cell_gids("IT2")
 
+    def test_matches_request_accepts_matching_combined_cache(self):
+        spike_data = SpikeData.from_sim_result(
+            self.sim_result,
+            pop_names=["IT2", "PV2"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=False,
+            ndigits=4,
+        )
+        self.assertTrue(spike_data.matches_request(
+            pop_names=["IT2", "PV2"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=False,
+            ndigits=4,
+        ))
+
+    def test_matches_request_rejects_wrong_metadata_fields(self):
+        spike_data = SpikeData.from_sim_result(
+            self.sim_result,
+            pop_names=["IT2", "PV2"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=False,
+            ndigits=4,
+        )
+        self.assertFalse(spike_data.matches_request(
+            pop_names=["IT2", "PV2"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=True,
+            ms=False,
+            ndigits=4,
+        ))
+        self.assertFalse(spike_data.matches_request(
+            pop_names=["IT2", "PV2"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=True,
+            ndigits=4,
+        ))
+        self.assertFalse(spike_data.matches_request(
+            pop_names=["IT2", "PV2"],
+            combine=False,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=False,
+            ndigits=4,
+        ))
+        self.assertFalse(spike_data.matches_request(
+            pop_names=["PV2", "IT2"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=False,
+            ndigits=4,
+        ))
+
+    def test_matches_request_handles_resolved_tmax(self):
+        spike_data = SpikeData.from_sim_result(
+            self.sim_result,
+            combine=True,
+            t0=0.001,
+            tmax=0.006,
+            subtract_t0=False,
+            ms=False,
+            ndigits=6,
+        )
+        self.assertTrue(spike_data.matches_request(
+            pop_names=["IT2", "PV2", "SILENT", "EMPTY"],
+            combine=True,
+            t0=0.001,
+            tmax=0.006,
+            subtract_t0=False,
+            ms=False,
+            ndigits=6,
+        ))
+        self.assertFalse(spike_data.matches_request(
+            pop_names=["IT2", "PV2", "SILENT", "EMPTY"],
+            combine=True,
+            t0=0.001,
+            tmax=0.005,
+            subtract_t0=False,
+            ms=False,
+            ndigits=6,
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
