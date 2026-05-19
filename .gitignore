@@ -15,3 +15,4 @@ external/
 .mplcache/
 dev_scratch/data_proc/a1_lfp_30s_0/*_cache/
 .agents/
+dev_scratch/data_src/hpc_remote/
