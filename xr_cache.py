@@ -320,8 +320,16 @@ def _load_cached_xr(
     return decode_xr_attrs_json(X)
 
 
-def cache_info_matches(found: dict[str, Any], expected: dict[str, Any]) -> bool:
+def cache_info_matches(found: dict[str, Any], expected: dict[str, Any], verbose=0) -> bool:
     """Return whether the stored cache_info matches the requested semantics."""
+    if verbose:
+        for key in ["step", "params", "source", "cache_version"]:
+            val_found = found.get(key)
+            val_expected = expected.get(key)
+            if val_found != val_expected:
+                print(f"Cache info mismatch on '{key}':")
+                print(f"  Found:    {val_found!r}")
+                print(f"  Expected: {val_expected!r}")
     return (
         found.get("step") == expected.get("step")
         and found.get("params") == expected.get("params")

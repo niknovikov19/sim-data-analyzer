@@ -72,6 +72,9 @@ Behavior:
   raise `ValueError`
 
 `lazy` is an execution/storage detail, not a separate public API family.
+The `h5netcdf` package and its `h5py` dependency are optional for eager
+collection, but required for `lazy=True` incremental writes and for opening
+existing HDF5/NetCDF4 artifacts when no other compatible backend is installed.
 
 ## Source-Specific Functions
 
@@ -277,6 +280,7 @@ The batch cache uses the same `cache_info` style as `xr_cache.py`, but the actua
 - batch is streamed directly into one NetCDF file
 - avoids assembling the whole batch array in RAM
 - useful for larger batches
+- requires the optional `h5netcdf` package and its `h5py` dependency
 
 Only the `lazy=True` path protects RAM during batch assembly.
 

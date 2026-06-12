@@ -4,6 +4,7 @@ import pickle
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import xarray as xr
@@ -214,6 +215,99 @@ class TestCollectedBatchXR(unittest.TestCase):
                 "write_batch_lfp_from_pkl_netcdf",
                 "write_batch_rates_from_spike_data_netcdf"]:
             self.assertFalse(hasattr(collected, name), name)
+
+    def test_eager_collection_does_not_load_incremental_backend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_idx_xr, dirpath_json = _make_json_batch(root)
+            cache_path = root / "cache" / "batch_json.nc"
+
+            with mock.patch.object(
+                    collected,
+                    "_load_incremental_netcdf_backend",
+                    side_effect=AssertionError("incremental backend should not be loaded"),
+                    ), mock.patch(
+                        "sim_data_analyzer.xr_io._resolve_engine",
+                        return_value="scipy",
+                    ):
+                X = collected.collect_batch_json(
+                    job_idx_xr,
+                    dirpath_json,
+                    var_mappings={"rate": "rates"},
+                    dict_dims={"pop": ["IT2", "PV2"]},
+                )
+                X_cached = collected.collect_batch_json(
+                    job_idx_xr,
+                    dirpath_json,
+                    var_mappings={"rate": "rates"},
+                    dict_dims={"pop": ["IT2", "PV2"]},
+                    cache_path=cache_path,
+                )
+
+            self.assertEqual(X["rate"].dims, ("rx", "wx", "pop"))
+            self.assertTrue(cache_path.exists())
+            self._assert_same_values(X, X_cached)
+
+    def test_incremental_backend_import_error_is_feature_specific(self):
+        import_builtin = __import__
+
+        def import_without_h5netcdf(name, *args, **kwargs):
+            if name == "h5netcdf":
+                raise ModuleNotFoundError("No module named 'h5netcdf'")
+            return import_builtin(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=import_without_h5netcdf):
+            with self.assertRaisesRegex(
+                    ImportError,
+                    "Incremental batch NetCDF writing requires",
+                    ) as error_context:
+                collected._load_incremental_netcdf_backend()
+
+        self.assertIsInstance(error_context.exception.__cause__, ModuleNotFoundError)
+
+    def test_lazy_collection_requires_backend_before_touching_output(self):
+        job_idx_xr = xr.DataArray(
+            np.array([0]),
+            dims=["job"],
+            coords={"job": [0]},
+        )
+        backend_error = ImportError(
+            "Incremental batch NetCDF writing requires the optional "
+            "'h5netcdf' package and its 'h5py' dependency"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            missing_path = root / "missing.nc"
+            existing_path = root / "existing.nc"
+            existing_path.write_bytes(b"keep this file")
+
+            with mock.patch.object(
+                    collected,
+                    "_load_incremental_netcdf_backend",
+                    side_effect=backend_error,
+                    ):
+                with self.assertRaisesRegex(
+                        ImportError,
+                        "Incremental batch NetCDF writing requires",
+                        ):
+                    collected._write_batch_netcdf(
+                        missing_path,
+                        job_idx_xr,
+                        lambda entry: None,
+                    )
+                with self.assertRaisesRegex(
+                        ImportError,
+                        "Incremental batch NetCDF writing requires",
+                        ):
+                    collected._write_batch_netcdf(
+                        existing_path,
+                        job_idx_xr,
+                        lambda entry: None,
+                    )
+
+            self.assertFalse(missing_path.exists())
+            self.assertEqual(existing_path.read_bytes(), b"keep this file")
 
     def test_extract_batch_params_to_xr_builds_expected_grid(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib.util
 import json
 import pickle
 from pathlib import Path
@@ -626,18 +625,17 @@ def _get_numeric_storage_dtype(dtype) -> np.dtype:
     return np_dtype
 
 
-def _get_h5_string_dtype():
+def _get_h5_string_dtype(h5py):
     """Return the UTF-8 string dtype used for NetCDF string coordinates."""
-    import h5py
     return h5py.string_dtype(encoding="utf-8")
 
 
-def _get_coord_storage_dtype(values: np.ndarray):
+def _get_coord_storage_dtype(values: np.ndarray, h5py):
     """Choose one NetCDF-compatible dtype for a coordinate variable."""
     if values.dtype.kind in {"U", "S"}:
-        return _get_h5_string_dtype()
+        return _get_h5_string_dtype(h5py)
     if values.dtype.kind == "O":
-        return _get_h5_string_dtype()
+        return _get_h5_string_dtype(h5py)
     return values.dtype
 
 
@@ -675,12 +673,17 @@ def _infer_batch_source(
     return source_parts
 
 
-def _require_incremental_netcdf_backend() -> None:
-    """Ensure the optional backend needed for incremental NetCDF writes exists."""
-    if importlib.util.find_spec("h5netcdf") is None:
+def _load_incremental_netcdf_backend():
+    """Load the optional modules needed for incremental NetCDF writes."""
+    try:
+        import h5netcdf
+        import h5py
+    except ImportError as exc:
         raise ImportError(
-            "Incremental batch NetCDF writing requires the optional 'h5netcdf' package"
-        )
+            "Incremental batch NetCDF writing requires the optional "
+            "'h5netcdf' package and its 'h5py' dependency"
+        ) from exc
+    return h5netcdf, h5py
 
 
 def _find_first_job_object(
@@ -719,11 +722,12 @@ def _non_dim_coord_names(
 def _create_coord_variables(
         nc_file,
         coords: xr.core.coordinates.DataArrayCoordinates | xr.core.coordinates.DatasetCoordinates,
+        h5py,
         ) -> None:
     """Create NetCDF coordinate variables for both dimension and auxiliary coords."""
     for coord_name, coord in coords.items():
         values = np.asarray(coord.values)
-        dtype = _get_coord_storage_dtype(values)
+        dtype = _get_coord_storage_dtype(values, h5py)
         var = nc_file.create_variable(str(coord_name), tuple(coord.dims), dtype=dtype)
         var[:] = values
         for attr_name, attr_value in dict(coord.attrs).items():
@@ -760,12 +764,12 @@ def _create_incremental_batch_file(
         fpath_out: Path,
         job_idx_xr: xr.DataArray,
         template: xr.DataArray | xr.Dataset,
+        h5netcdf,
+        h5py,
         attrs: dict[str, Any] | None = None,
         chunks: dict[str, int] | None = None,
         ) -> str:
     """Create an empty chunked NetCDF batch file and return its data type."""
-    import h5netcdf
-
     attrs = {} if attrs is None else dict(attrs)
     combined_coords = _make_combined_coords(job_idx_xr, template)
     combined_sizes = {str(dim_name): int(dim_size) for dim_name, dim_size in job_idx_xr.sizes.items()}
@@ -782,7 +786,7 @@ def _create_incremental_batch_file(
             nc_file.dimensions[str(dim_name)] = int(dim_size)
 
         # Write all dimension and auxiliary coordinates up front.
-        _create_coord_variables(nc_file, combined_coords)
+        _create_coord_variables(nc_file, combined_coords, h5py)
 
         if isinstance(template, xr.DataArray):
             data_attrs = copy.deepcopy(dict(template.attrs))
@@ -957,9 +961,7 @@ def _write_batch_netcdf(
     batch array in RAM. It creates the output file first and then writes one
     job slice at a time into that file.
     """
-    import h5netcdf
-
-    _require_incremental_netcdf_backend()
+    h5netcdf, h5py = _load_incremental_netcdf_backend()
     fpath_out = Path(fpath_out)
     if fpath_out.exists():
         if not overwrite:
@@ -976,6 +978,8 @@ def _write_batch_netcdf(
         fpath_out,
         job_idx_xr,
         first_obj,
+        h5netcdf,
+        h5py,
         attrs=attrs,
         chunks=chunks,
     )
@@ -1123,6 +1127,7 @@ def _load_or_build_batch_xr(
         load: bool = False,
         open_kwargs: dict[str, Any] | None = None,
         overwrite: bool = True,
+        allow_cache_mismatch: bool = False
         ) -> xr.DataArray | xr.Dataset:
     """Reuse or build one batch artifact while keeping cache logic internal."""
     cache_info, cache_attrs = _build_batch_cache_payload(
@@ -1144,8 +1149,10 @@ def _load_or_build_batch_xr(
             load=load,
             open_kwargs=open_kwargs,
         )
+        if allow_cache_mismatch:
+            return cached
         found = cached.attrs.get("cache_info")
-        if isinstance(found, dict) and cache_info_matches(found, cache_info):
+        if isinstance(found, dict) and cache_info_matches(found, cache_info, verbose=1):
             return cached
         if hasattr(cached, "close"):
             cached.close()
@@ -1526,6 +1533,7 @@ def collect_batch_json(
         chunks: dict[str, int] | None = None,
         skip_missing: bool = True,
         overwrite: bool = True,
+        allow_cache_mismatch: bool = False
         ) -> xr.Dataset:
     """Collect per-job JSON outputs into a single batch Dataset.
 
@@ -1572,6 +1580,7 @@ def collect_batch_json(
         load=load,
         open_kwargs=open_kwargs,
         overwrite=overwrite,
+        allow_cache_mismatch=allow_cache_mismatch
     )
 
 
