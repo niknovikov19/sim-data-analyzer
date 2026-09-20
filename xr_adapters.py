@@ -247,6 +247,13 @@ def get_net_cell_stats_xr(
     if t_limits[1] <= t_limits[0]:
         raise ValueError(f'Invalid time limits: {t_limits}')
 
+    # Keep generated frozen-input populations out of the default cell set
+    if pop_names is None:
+        pop_names = [
+            pop_name for pop_name in get_pop_names(sim_result)
+            if not str(pop_name).endswith('frz')
+        ]
+
     # Reuse the shared per-cell spike representation and parser behavior
     spike_data = SpikeData.from_sim_result(
         sim_result,

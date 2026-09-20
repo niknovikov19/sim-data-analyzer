@@ -188,6 +188,10 @@ class TestCollectedXRAdapters(unittest.TestCase):
             "cellGids": [3],
             "tags": {"ynormRange": [0.4, 0.5]},
         }
+        sim_result["net"]["pops"]["IT2frz"] = {
+            "cellGids": [4],
+            "tags": {"ynormRange": [0.4, 0.5]},
+        }
         actual = collected.get_net_cell_stats_xr(
             sim_result,
             t_limits=(0, 0.006),
@@ -203,6 +207,13 @@ class TestCollectedXRAdapters(unittest.TestCase):
         self.assertEqual(actual.cv.sel(gid=0).item(), 0)
         self.assertTrue(np.isnan(actual.cv.sel(gid=1).item()))
         self.assertEqual(actual.rate.attrs["units"], "Hz")
+
+        automatic = collected.get_net_cell_stats_xr(
+            sim_result,
+            t_limits=(0, 0.006),
+            nspikes_min=2,
+        )
+        self.assertNotIn("IT2frz", automatic["pop"].values)
 
         with self.assertRaises(ValueError):
             collected.get_net_cell_stats_xr(sim_result, nspikes_min=1)
