@@ -23,9 +23,12 @@ from sim_data_analyzer.netpyne_res_parse_utils import (
     get_sim_duration,
 )
 from sim_data_analyzer.data_proc_utils import (
+    calc_pop_cv,
+    calc_pop_rate,
     calc_net_rate_dynamics,
     calc_pop_rate_dynamics,
 )
+from sim_data_analyzer.spike_data import SpikeData
 
 
 def _make_rate_tvec(time_range: Tuple[float, float], dt_bin: float) -> np.ndarray:
@@ -226,3 +229,69 @@ def get_net_rate_dynamics_xr(
     for pop_name in nonempty_pop_names:
         R.loc[{'pop': pop_name}] = rate_dyn[pop_name][1]
     return R
+
+
+def get_net_cell_stats_xr(
+        sim_result: Dict,
+        t_limits: Tuple[float, float | None] = (0, None),
+        nspikes_min: int = 3,
+        pop_names: list[str] | tuple[str, ...] | None = None,
+        ) -> xr.Dataset:
+    """Convert network per-cell rate and CV statistics to an xarray Dataset. """
+    if nspikes_min < 2:
+        raise ValueError('nspikes_min should be at least 2')
+    t0, t1 = t_limits
+    if t1 is None:
+        t1 = get_sim_duration(sim_result)
+    t_limits = (float(t0), float(t1))
+    if t_limits[1] <= t_limits[0]:
+        raise ValueError(f'Invalid time limits: {t_limits}')
+
+    # Reuse the shared per-cell spike representation and parser behavior
+    spike_data = SpikeData.from_sim_result(
+        sim_result,
+        pop_names=pop_names,
+        combine=False,
+        t0=t_limits[0],
+        tmax=t_limits[1],
+        subtract_t0=False,
+        ms=False,
+    )
+    rows = []
+    for pop_name in spike_data.get_pop_names():
+        gids = spike_data.get_pop_cell_gids(pop_name)
+        spikes = spike_data.get_pop_spikes(pop_name)
+        rows.extend(zip(gids, [pop_name] * len(gids), spikes))
+    rows.sort(key=lambda row: int(row[0]))
+
+    # Preserve silent and low-spike cells in the GID-aligned output
+    gids = np.asarray([row[0] for row in rows], dtype=np.int64)
+    pops = np.asarray([row[1] for row in rows], dtype=str)
+    if len(np.unique(gids)) != len(gids):
+        raise ValueError('A GID belongs to more than one selected population')
+    rates = np.empty(len(rows), dtype=float)
+    cvs = np.full(len(rows), np.nan, dtype=float)
+    for pos, (_, _, spikes) in enumerate(rows):
+        rates[pos] = calc_pop_rate([spikes], t_limits)
+        if len(spikes) >= nspikes_min:
+            cvs[pos] = calc_pop_cv(
+                [spikes], t_limits, nspikes_min=nspikes_min
+            )
+
+    dataset = xr.Dataset(
+        data_vars={
+            'rate': ('gid', rates),
+            'cv': ('gid', cvs),
+        },
+        coords={
+            'gid': gids,
+            'pop': ('gid', pops),
+        },
+        attrs={
+            't_start_s': t_limits[0],
+            't_stop_s': t_limits[1],
+            'nspikes_min': int(nspikes_min),
+        },
+    )
+    dataset['rate'].attrs['units'] = 'Hz'
+    return dataset

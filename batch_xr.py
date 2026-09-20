@@ -21,7 +21,11 @@ import xarray as xr
 from sim_data_analyzer import netpyne_res_parse_utils as parse_utils
 from sim_data_analyzer.data_proc_utils import calc_pop_rate_dynamics
 from sim_data_analyzer.spike_data import SpikeData
-from sim_data_analyzer.xr_adapters import get_lfp_xr, get_net_rate_dynamics_xr
+from sim_data_analyzer.xr_adapters import (
+    get_lfp_xr,
+    get_net_cell_stats_xr,
+    get_net_rate_dynamics_xr,
+)
 from sim_data_analyzer.xr_cache import (
     cache_info_matches,
     decode_xr_attrs_json,
@@ -37,10 +41,12 @@ __all__ = [
     "extract_batch_params_to_xr",
     "iter_batch_jobs",
     "extract_batch_spike_data_from_pkl",
+    "sim_result_to_cell_stats_xr",
     "collect_batch_xr",
     "collect_batch_xr_set",
     "collect_batch_json",
     "collect_batch_rates_from_pkl",
+    "collect_batch_cell_stats_from_pkl",
     "collect_batch_lfp_from_pkl",
     "collect_batch_rates_from_spike_data",
 ]
@@ -396,6 +402,21 @@ def sim_result_to_lfp_xr(sim_result: dict[str, Any]) -> xr.DataArray:
     return get_lfp_xr(sim_result)
 
 
+def sim_result_to_cell_stats_xr(
+        sim_result: dict[str, Any],
+        t_limits: tuple[float, float | None] = (0, None),
+        nspikes_min: int = 3,
+        pop_names: list[str] | tuple[str, ...] | None = None,
+        ) -> xr.Dataset:
+    """Extract one per-job GID-aligned cell-statistics dataset."""
+    return get_net_cell_stats_xr(
+        sim_result,
+        t_limits=t_limits,
+        nspikes_min=nspikes_min,
+        pop_names=pop_names,
+    )
+
+
 def load_job_spike_data(
         job: dict[str, Any],
         dirpath_data: str | Path,
@@ -519,15 +540,21 @@ def _ensure_job_xr_compatible(
                         "explicit t_limits so every job uses the same time window."
                     )
                 raise ValueError(msg)
-            if dim_name in template.coords and dim_name in X_job.coords:
-                if not np.array_equal(
-                        np.asarray(template.coords[dim_name].values),
-                        np.asarray(X_job.coords[dim_name].values)):
-                    raise ValueError(
-                        f"Incompatible per-job coordinate values for dim {dim_name!r}. "
-                        "If this came from SpikeData-derived rates, pass an explicit "
-                        "t_limits so every job uses the same time window."
+        for coord_name in template.coords:
+            if coord_name not in X_job.coords:
+                raise ValueError(
+                    f"Per-job coordinate {coord_name!r} is missing"
+                )
+            if not np.array_equal(
+                    np.asarray(template.coords[coord_name].values),
+                    np.asarray(X_job.coords[coord_name].values)):
+                msg = f"Incompatible per-job coordinate values for {coord_name!r}"
+                if coord_name == "time":
+                    msg += (
+                        ". If this came from SpikeData-derived rates, pass an "
+                        "explicit t_limits so every job uses the same time window."
                     )
+                raise ValueError(msg)
         return
 
     assert isinstance(template, xr.Dataset) and isinstance(X_job, xr.Dataset)
@@ -1281,6 +1308,22 @@ def _make_lfp_from_pkl_reader(
     )
 
 
+def _make_cell_stats_from_pkl_reader(
+        dirpath_data: str | Path,
+        fname_templ: str,
+        t_limits: tuple[float, float | None],
+        nspikes_min: int,
+        pop_names: list[str] | tuple[str, ...] | None = None,
+        ) -> Callable[[dict[str, Any]], xr.Dataset]:
+    """Build one per-job reader for cell statistics computed from pickles."""
+    return lambda job: sim_result_to_cell_stats_xr(
+        load_job_pkl(job, dirpath_data, fname_templ=fname_templ),
+        t_limits=t_limits,
+        nspikes_min=nspikes_min,
+        pop_names=pop_names,
+    )
+
+
 def _make_rates_from_spike_data_reader(
         dirpath_data: str | Path,
         fname_templ: str,
@@ -1646,6 +1689,65 @@ def collect_batch_rates_from_pkl(
         ),
         cache_path=cache_path,
         cache_data_type="dataarray",
+        lazy=lazy,
+        load=load,
+        open_kwargs=open_kwargs,
+        overwrite=overwrite,
+    )
+
+
+def collect_batch_cell_stats_from_pkl(
+        job_idx_xr: xr.DataArray,
+        dirpath_data: str | Path,
+        fname_templ: str = "grid_{job:05d}_data.pkl",
+        t_limits: tuple[float, float | None] = (0, None),
+        nspikes_min: int = 3,
+        pop_names: list[str] | tuple[str, ...] | None = None,
+        cache_path: str | Path | None = None,
+        lazy: bool = False,
+        load: bool = False,
+        open_kwargs: dict[str, Any] | None = None,
+        chunks: dict[str, int] | None = None,
+        skip_missing: bool = True,
+        overwrite: bool = True,
+        ) -> xr.Dataset:
+    """Collect per-cell rate and CV datasets from raw simulation pickles."""
+    reader = _make_cell_stats_from_pkl_reader(
+        dirpath_data,
+        fname_templ=fname_templ,
+        t_limits=t_limits,
+        nspikes_min=nspikes_min,
+        pop_names=pop_names,
+    )
+    return _load_or_build_batch_xr(
+        cache_step="collect_batch_cell_stats_from_pkl",
+        cache_params={
+            "fname_templ": fname_templ,
+            "t_limits": t_limits,
+            "nspikes_min": nspikes_min,
+            "pop_names": pop_names,
+            "skip_missing": skip_missing,
+        },
+        cache_source=_make_batch_source_fingerprint(job_idx_xr, dirpath_data),
+        build_eager=lambda: _collect_batch_eager(
+            job_idx_xr,
+            reader,
+            chunks=chunks,
+            skip_missing=skip_missing,
+        ),
+        build_lazy=lambda fpath_cache, attrs: _write_batch_netcdf(
+            fpath_cache,
+            job_idx_xr,
+            reader,
+            chunks=chunks,
+            attrs=attrs,
+            skip_missing=skip_missing,
+            load=load,
+            open_kwargs=open_kwargs,
+            overwrite=overwrite,
+        ),
+        cache_path=cache_path,
+        cache_data_type="dataset",
         lazy=lazy,
         load=load,
         open_kwargs=open_kwargs,

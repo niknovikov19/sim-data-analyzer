@@ -202,6 +202,7 @@ class TestCollectedBatchXR(unittest.TestCase):
                 "collect_batch_xr_set",
                 "collect_batch_json",
                 "collect_batch_rates_from_pkl",
+                "collect_batch_cell_stats_from_pkl",
                 "collect_batch_lfp_from_pkl",
                 "collect_batch_rates_from_spike_data"]:
             self.assertTrue(hasattr(collected, name), name)
@@ -351,6 +352,42 @@ class TestCollectedBatchXR(unittest.TestCase):
                     **kwargs,
                 ),
                 root / "cache" / "batch_rates.nc",
+                {"fname_templ": "grid_{job:05d}_other.pkl"},
+            )
+
+    def test_collect_batch_cell_stats_from_pkl_eager_and_cached(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_idx_xr, dirpath_data = _make_rate_batch(root)
+
+            cell_stats = collected.collect_batch_cell_stats_from_pkl(
+                job_idx_xr,
+                dirpath_data,
+                t_limits=(0, 0.006),
+                nspikes_min=2,
+                pop_names=["IT2", "PV2"],
+            )
+
+            self.assertEqual(cell_stats.rate.dims, ("rx", "wx", "gid"))
+            self.assertEqual(cell_stats.gid.values.tolist(), [0, 1, 2])
+            self.assertEqual(cell_stats["pop"].values.tolist(), ["IT2", "IT2", "PV2"])
+            self.assertIn("job_id", cell_stats.coords)
+            self.assertGreater(
+                cell_stats.rate.sel(rx=20.0, wx=0.1, gid=0).item(),
+                cell_stats.rate.sel(rx=10.0, wx=0.1, gid=0).item(),
+            )
+
+            self._assert_cache_behavior(
+                lambda **kwargs: collected.collect_batch_cell_stats_from_pkl(
+                    job_idx_xr,
+                    dirpath_data,
+                    t_limits=(0, 0.006),
+                    nspikes_min=2,
+                    pop_names=["IT2", "PV2"],
+                    chunks={"rx": 1},
+                    **kwargs,
+                ),
+                root / "cache" / "batch_cell_stats.nc",
                 {"fname_templ": "grid_{job:05d}_other.pkl"},
             )
 

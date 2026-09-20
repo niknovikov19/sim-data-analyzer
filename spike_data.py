@@ -110,24 +110,65 @@ class SpikeData:
         if tmax is None:
             tmax = parse_utils.get_sim_duration(sim_result)
 
-        spikes_by_pop = {}
-        cell_gids_by_pop = {} if not combine else None
-        pop_sizes = {}
-        for pop_name in pop_names:
-            spikes = parse_utils.get_pop_spikes(
-                sim_result,
-                pop_name,
-                combine_cells=combine,
-                t0=t0,
-                tmax=tmax,
-                subtract_t0=subtract_t0,
-                ms=ms,
-                ndigits=ndigits,
-            )
-            spikes_by_pop[pop_name] = _copy_spike_list(spikes)
-            pop_sizes[pop_name] = parse_utils.get_pop_size(sim_result, pop_name)
-            if not combine:
-                cell_gids_by_pop[pop_name] = parse_utils.get_pop_cell_gids(sim_result, pop_name)
+        pop_sizes = {
+            pop_name: parse_utils.get_pop_size(sim_result, pop_name)
+            for pop_name in pop_names
+        }
+        cell_gids_by_pop = None
+        if combine:
+            spikes_by_pop = {
+                pop_name: parse_utils.get_pop_spikes(
+                    sim_result,
+                    pop_name,
+                    combine_cells=True,
+                    t0=t0,
+                    tmax=tmax,
+                    subtract_t0=subtract_t0,
+                    ms=ms,
+                    ndigits=ndigits,
+                )
+                for pop_name in pop_names
+            }
+        else:
+            cell_gids_by_pop = {
+                pop_name: np.asarray(
+                    parse_utils.get_pop_cell_gids(sim_result, pop_name),
+                    dtype=np.int64,
+                )
+                for pop_name in pop_names
+            }
+            spikes_by_pop = {
+                pop_name: [[] for _ in cell_gids_by_pop[pop_name]]
+                for pop_name in pop_names
+            }
+            destinations = {}
+            for pop_name in pop_names:
+                for pos, gid in enumerate(cell_gids_by_pop[pop_name]):
+                    destinations.setdefault(int(gid), []).append((pop_name, pos))
+
+            # Index all selected per-cell spikes in one pass
+            sim_data = parse_utils.get_sim_data(sim_result)
+            spkids = sim_data['spkid']
+            spkts = sim_data['spkt']
+            if len(spkids) != len(spkts):
+                raise ValueError('spkid and spkt should have equal lengths')
+            tsub = t0 if subtract_t0 else 0
+            mult = 1000 if ms else 1
+            for gid, time_ms in zip(spkids, spkts):
+                targets = destinations.get(int(gid))
+                time = float(time_ms) / 1000
+                if targets is None or not t0 <= time <= tmax:
+                    continue
+                value = (time - tsub) * mult
+                for pop_name, pos in targets:
+                    spikes_by_pop[pop_name][pos].append(value)
+            spikes_by_pop = {
+                pop_name: [
+                    np.round(np.asarray(spikes, dtype=float), ndigits)
+                    for spikes in pop_spikes
+                ]
+                for pop_name, pop_spikes in spikes_by_pop.items()
+            }
 
         meta = _SpikeMeta(
             combine=combine,

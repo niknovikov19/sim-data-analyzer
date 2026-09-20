@@ -20,6 +20,7 @@ XR_ADAPTER_NAMES = [
     "get_pop_lfps_xr",
     "get_pop_rate_dynamics_xr",
     "get_net_rate_dynamics_xr",
+    "get_net_cell_stats_xr",
 ]
 
 
@@ -180,6 +181,31 @@ class TestCollectedXRAdapters(unittest.TestCase):
     def test_get_net_rate_dynamics_xr_rejects_per_cell(self):
         with self.assertRaises(ValueError):
             collected.get_net_rate_dynamics_xr(self.sim_result, avg_cells=False)
+
+    def test_get_net_cell_stats_xr_preserves_gid_alignment(self):
+        sim_result = copy.deepcopy(self.sim_result)
+        sim_result["net"]["pops"]["SILENT"] = {
+            "cellGids": [3],
+            "tags": {"ynormRange": [0.4, 0.5]},
+        }
+        actual = collected.get_net_cell_stats_xr(
+            sim_result,
+            t_limits=(0, 0.006),
+            nspikes_min=2,
+            pop_names=["IT2", "PV2", "SILENT"],
+        )
+
+        self.assertEqual(actual.gid.values.tolist(), [0, 1, 2, 3])
+        self.assertEqual(actual["pop"].values.tolist(), ["IT2", "IT2", "PV2", "SILENT"])
+        self.assertAlmostEqual(actual.rate.sel(gid=0).item(), 2 / 0.006)
+        self.assertAlmostEqual(actual.rate.sel(gid=1).item(), 1 / 0.006)
+        self.assertEqual(actual.rate.sel(gid=3).item(), 0)
+        self.assertEqual(actual.cv.sel(gid=0).item(), 0)
+        self.assertTrue(np.isnan(actual.cv.sel(gid=1).item()))
+        self.assertEqual(actual.rate.attrs["units"], "Hz")
+
+        with self.assertRaises(ValueError):
+            collected.get_net_cell_stats_xr(sim_result, nspikes_min=1)
 
     def test_get_trace_xr_equivalence(self):
         calls = [
